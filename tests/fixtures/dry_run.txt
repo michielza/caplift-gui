@@ -1,0 +1,61 @@
+Wrapper: local/muse-glimmer-30b-abliterated-gguf
+Model key: The-freezer/Muse-Glimmer-30B-Abliterated-GGUF/Muse-Glimmer-30B-Abliterated-Q4_K_M.gguf
+Base template: meta/muse-glimmer
+Target directory: C:\Users\example\.lmstudio\hub\models\local\muse-glimmer-30b-abliterated-gguf
+Registry: C:\Users\example\.lmstudio\hub\models\.lmstudio-caplift.json
+
+--- C:\Users\example\.lmstudio\hub\models\local\muse-glimmer-30b-abliterated-gguf\manifest.json
+{
+  "dependencies": [
+    {
+      "modelKeys": [
+        "The-freezer/Muse-Glimmer-30B-Abliterated-GGUF/Muse-Glimmer-30B-Abliterated-Q4_K_M.gguf"
+      ],
+      "purpose": "baseModel",
+      "sources": [
+        {
+          "repo": "Muse-Glimmer-30B-Abliterated-GGUF",
+          "type": "huggingface",
+          "user": "The-freezer"
+        }
+      ],
+      "type": "model"
+    }
+  ],
+  "name": "muse-glimmer-30b-abliterated-gguf",
+  "owner": "local",
+  "revision": 1,
+  "type": "model"
+}
+
+--- C:\Users\example\.lmstudio\hub\models\local\muse-glimmer-30b-abliterated-gguf\model.yaml
+base:
+- key: >-
+    The-freezer/Muse-Glimmer-30B-Abliterated-GGUF/Muse-Glimmer-30B-Abliterated-Q4_K_M.gguf
+  sources:
+  - repo: Muse-Glimmer-30B-Abliterated-GGUF
+    type: huggingface
+    user: The-freezer
+config:
+  operation:
+    fields:
+    - key: llm.prediction.temperature
+      value: 1.0
+customFields:
+- defaultValue: high
+  description: Controls the reasoning strength used in the chat template
+  displayName: Reasoning Strength
+  key: reasoningStrength
+  type: select
+metadataOverrides:
+  architectures:
+  - muse-glimmer
+  compatibilityTypes:
+  - gguf
+  contextLengths:
+  - 131072
+  domain: llm
+  reasoning: true
+  trainedForToolUse: true
+  vision: true
+model: local/muse-glimmer-30b-abliterated-gguf

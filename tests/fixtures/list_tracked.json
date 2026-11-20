@@ -1,0 +1,13 @@
+{
+  "availableModels": [],
+  "wrappedModels": [
+    {
+      "baseModelId": "meta/muse-glimmer",
+      "createdAtUnixSeconds": 1795206747,
+      "modelKey": "The-freezer/Muse-Glimmer-30B-Abliterated-GGUF/Muse-Glimmer-30B-Abliterated-Q4_K_M.gguf",
+      "targetDir": "C:/Users/example/.lmstudio/hub/models/local/muse-glimmer-30b-abliterated-gguf",
+      "updatedAtUnixSeconds": 1795206747,
+      "wrapperModelId": "local/muse-glimmer-30b-abliterated-gguf"
+    }
+  ]
+}
