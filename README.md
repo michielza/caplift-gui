@@ -6,8 +6,6 @@ templates).
 
 Dark, minimal, and dependency-light: one window, three views, no accounts, no telemetry.
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-
 ## What it does
 
 - **Available models** — lists installed LLMs that are not wrapped yet, with the CLI's suggested
