@@ -70,10 +70,6 @@ class AvailableModel:
         return bool(self.base_model_id)
 
     @property
-    def already_wrapped(self) -> bool:
-        return bool(self.wrapper_model_id) and self.model_key.startswith("local/")
-
-    @property
     def summary(self) -> str:
         """One-line description built from whatever metadata is present."""
         bits = [self.publisher, self.params_string, self.architecture]

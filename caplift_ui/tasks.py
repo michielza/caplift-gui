@@ -8,9 +8,10 @@ widget off the main thread.
 from __future__ import annotations
 
 import queue
+import sys
 import threading
 import traceback
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Callable, List, Optional
 
 POLL_INTERVAL_MS = 60
@@ -92,9 +93,13 @@ class TaskBus:
             task.error = exc
             task.traceback_text = traceback.format_exc()
         finally:
+            # Queue the result BEFORE decrementing _pending. _drain stops polling
+            # as soon as pending hits zero, so decrementing first leaves a window
+            # where a finished task sits in the queue with nobody scheduled to
+            # drain it — its callbacks would never fire.
+            self._queue.put(task)
             with self._lock:
                 self._pending -= 1
-            self._queue.put(task)
 
     # ---- main-thread side ----------------------------------------------
 
@@ -109,7 +114,13 @@ class TaskBus:
                 task = self._queue.get_nowait()
             except queue.Empty:
                 break
-            self._dispatch(task)
+            # Guarded: an exception escaping here would skip the reschedule at
+            # the end of this method, leaving _polling True forever and stalling
+            # the bus so every later submit silently does nothing.
+            try:
+                self._dispatch(task)
+            except BaseException:  # noqa: BLE001 - one bad callback must not win
+                self._report_callback_failure()
 
         self._report_busy()
 
@@ -117,6 +128,15 @@ class TaskBus:
             self._polling = False
             return
         self._widget.after(POLL_INTERVAL_MS, self._drain)
+
+    def _report_callback_failure(self) -> None:
+        """Route a callback crash to the app's handler instead of killing the loop."""
+        exc_type, exc_value, exc_traceback = sys.exc_info()
+        handler = getattr(self._widget, "report_callback_exception", None)
+        if callable(handler):
+            handler(exc_type, exc_value, exc_traceback)
+            return
+        traceback.print_exception(exc_type, exc_value, exc_traceback)  # pragma: no cover
 
     def _dispatch(self, task: Task) -> None:
         if task.failed:
