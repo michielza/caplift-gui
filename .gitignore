@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# PyInstaller output
+build/
+dist/
+
+# Local runtime state, written next to the executable
+caplift_ui_config.json
+
+# Logs
+*.log
+
+# Editors and OS cruft
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+
+# NOTE: main.spec is deliberately NOT ignored. It is the PyInstaller build
+# recipe, and the build cannot be reproduced without it.
