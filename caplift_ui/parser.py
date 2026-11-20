@@ -266,6 +266,13 @@ _MISSING_BASE_RE = re.compile(
     r"no suitable static base template found for (?P<model>.+?);\s*pass --base-model-id",
     re.IGNORECASE,
 )
+# Emitted when the field is left blank, so the CLI chooses a template itself and
+# then finds it is not installed. Distinct from the case above: there the CLI
+# declined to choose, here it chose badly.
+_BASE_NOT_INSTALLED_RE = re.compile(
+    r"base template (?P<template>\S+) is not installed at (?P<path>.+?)\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
 _LMS_UNAVAILABLE_HINTS = (
     "no running lm studio",
     "failed to start or connect",
@@ -293,6 +300,16 @@ def describe_cli_error(stderr: str, stdout: str = "") -> str:
             f"No static base template matched {match.group('model').strip()}. "
             "Set one explicitly in the Base template field (--base-model-id for the CLI), "
             "for example `qwen/qwen3.5-35b-a3b` for a Qwen3.5 model, then wrap again."
+        )
+
+    match = _BASE_NOT_INSTALLED_RE.search(combined)
+    if match:
+        template = match.group("template").strip()
+        return (
+            f"The base template field was left empty, so lmstudio-caplift chose `{template}` "
+            f"itself — but that model is not installed at {match.group('path').strip()}. "
+            "Pick an installed template from the Base template field, or install "
+            f"`{template}` from LM Studio's Hub."
         )
 
     first_error = next(

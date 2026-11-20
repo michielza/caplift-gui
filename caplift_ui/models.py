@@ -9,6 +9,32 @@ from typing import Any, Mapping, Optional
 
 
 _DOTS = re.compile(r"\.")
+# A Windows drive letter or a rooted path means this is a filesystem location,
+# not an owner/repo/file.gguf reference.
+_ABSOLUTE = re.compile(r"^(?:[A-Za-z]:|[\\/])")
+
+
+def derive_hf_repo(path: Optional[str]) -> Optional[str]:
+    """Hugging Face ``owner/repo`` inferred from an installed file path.
+
+    ``lms ls`` reports each model as ``owner/repo/file.gguf``, and dropping the
+    filename gives the repository. Deliberately conservative: anything that is
+    not exactly that shape returns None, because a wrong repository would put
+    false provenance into the generated files. A local filesystem path is the
+    case worth guarding, hence the absolute-path check.
+    """
+    if not path:
+        return None
+    if _ABSOLUTE.match(path):
+        return None
+
+    parts = [segment for segment in path.replace("\\", "/").split("/") if segment]
+    if len(parts) != 3:
+        return None
+    owner, repo, filename = parts
+    if not filename.lower().endswith(".gguf"):
+        return None
+    return f"{owner}/{repo}"
 
 
 def derive_wrapper_id(model_key: str) -> str:
@@ -64,6 +90,16 @@ class AvailableModel:
     def suggested_wrapper_id(self) -> str:
         """The CLI's own default when provided, else a local derivation."""
         return self.wrapper_model_id or derive_wrapper_id(self.model_key)
+
+    @property
+    def suggested_hf_repo(self) -> Optional[str]:
+        """Repository to offer for ``--hf-repo``.
+
+        Prefers anything the CLI reported; otherwise derives it from the file
+        path. Without this the field would sit empty and the generated files
+        would record no source at all.
+        """
+        return self.hf_repo or derive_hf_repo(self.path)
 
     @property
     def has_base_template(self) -> bool:

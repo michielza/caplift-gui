@@ -40,6 +40,22 @@ def model_from_wrapped(item: WrappedModel) -> AvailableModel:
     )
 
 
+def hf_repo_for_wrap(base_template: str, hf_field: str) -> Optional[str]:
+    """The ``--hf-repo`` value to send, if any.
+
+    Deliberately withheld while the base template is empty. The CLI uses
+    ``--hf-repo`` for source metadata *and* for choosing a base template (its
+    own help says so), while this field is pre-filled from a guess about the
+    model's origin. Letting a guess steer template selection would change which
+    template gets picked, so it is only sent once a template is set.
+
+    Pure, so this rule is tested rather than trusted.
+    """
+    if not (base_template or "").strip():
+        return None
+    return (hf_field or "").strip() or None
+
+
 def build_rows(
     available: Sequence[AvailableModel],
     wrapped: Sequence[WrappedModel],
@@ -296,7 +312,11 @@ class AvailableView(ctk.CTkFrame):
         self.hf_field = LabeledEntry(
             panel,
             label="Hugging Face repo (--hf-repo, optional)",
-            hint="Exact source repo, e.g. unsloth/Qwen3.5-35B-A3B-GGUF.",
+            hint=(
+                "Recorded as the wrapper's source in the generated files. Pre-filled from the "
+                "installed file path. Sent only when a base template is set, because the CLI "
+                "also uses this to choose one."
+            ),
             placeholder="owner/repo",
             hint_wraplength=340,
         )
@@ -559,7 +579,7 @@ class AvailableView(ctk.CTkFrame):
         self._set_form_enabled(True)
         self.base_field.set(model.base_model_id or self.app.last_base_template() or "")
         self.wrapper_field.set(model.suggested_wrapper_id)
-        self.hf_field.set(model.hf_repo or "")
+        self.hf_field.set(model.suggested_hf_repo or "")
 
         if wrapped_entry is not None:
             self.state_pill.set_state("Already wrapped — recreating will need --force", "warn")
@@ -665,6 +685,10 @@ class AvailableView(ctk.CTkFrame):
 
     # ---- actions --------------------------------------------------------
 
+    def _hf_repo_for_wrap(self) -> Optional[str]:
+        """The --hf-repo value to send, if any. See :func:`hf_repo_for_wrap`."""
+        return hf_repo_for_wrap(self.base_field.get(), self.hf_field.get())
+
     def preview_selected(self) -> None:
         model = self._selected
         if model is None:
@@ -676,7 +700,7 @@ class AvailableView(ctk.CTkFrame):
 
         base = self.base_field.get() or None
         wrapper = self.wrapper_field.get() or None
-        hf_repo = self.hf_field.get() or None
+        hf_repo = self._hf_repo_for_wrap()
 
         def work():
             runner: CliRunner = self.app.build_runner()
@@ -713,7 +737,7 @@ class AvailableView(ctk.CTkFrame):
 
         base = self.base_field.get() or None
         wrapper = self.wrapper_field.get() or None
-        hf_repo = self.hf_field.get() or None
+        hf_repo = self._hf_repo_for_wrap()
         force = bool(self.force_switch.get())
 
         details = [

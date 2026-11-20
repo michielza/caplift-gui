@@ -14,7 +14,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from caplift_ui.config import AppConfig, config_path, find_cli, load_config, save_config
-from caplift_ui.models import derive_wrapper_id
+from caplift_ui.models import AvailableModel, derive_hf_repo, derive_wrapper_id
 from caplift_ui.parser import (
     ParseError,
     describe_cli_error,
@@ -153,6 +153,26 @@ class ErrorMessageTests(unittest.TestCase):
         )
         self.assertIn("LM Studio is not running", message)
 
+    def test_auto_selected_template_that_is_not_installed_is_explained(self) -> None:
+        # Real output: the field was blank, so the CLI chose a template itself
+        # and discovered it is not installed.
+        message = describe_cli_error(
+            "Error: base template qwen/qwen3-30b-a3b is not installed at "
+            r"C:\Users\example\.lmstudio\hub\models\qwen\qwen3-30b-a3b"
+        )
+        self.assertIn("qwen/qwen3-30b-a3b", message)
+        self.assertIn("not installed", message)
+        self.assertIn("Base template field", message)
+        # Must be distinguishable from "no template matched at all".
+        self.assertNotIn("No static base template matched", message)
+
+    def test_declined_match_is_still_explained_separately(self) -> None:
+        message = describe_cli_error(
+            "Error: no suitable static base template found for some/model; pass --base-model-id"
+        )
+        self.assertIn("No static base template matched", message)
+        self.assertNotIn("left empty", message)
+
     def test_unknown_error_falls_back_to_first_error_line(self) -> None:
         message = describe_cli_error("warning: something\nError: the real problem\nmore noise")
         self.assertEqual(message, "Error: the real problem")
@@ -219,6 +239,79 @@ class RealListingTests(unittest.TestCase):
         wrapped = self.registry.wrapped[0]
         self.assertEqual(wrapped.wrapper_model_id, "local/muse-glimmer-30b-abliterated-gguf")
         self.assertEqual(wrapped.base_model_id, "meta/muse-glimmer")
+
+
+class HfRepoTests(unittest.TestCase):
+    """Deriving owner/repo from an installed file path.
+
+    Conservative by design: a wrong repository writes false provenance into the
+    generated files, so anything that is not exactly owner/repo/file.gguf must
+    return None rather than a guess.
+    """
+
+    def test_real_lms_path_yields_owner_and_repo(self) -> None:
+        self.assertEqual(
+            derive_hf_repo("lmstudio-community/granite-4.2-30b-GGUF/granite-4.2-30b-Q4_K_M.gguf"),
+            "lmstudio-community/granite-4.2-30b-GGUF",
+        )
+
+    def test_three_part_path_with_uppercase_and_hyphens(self) -> None:
+        self.assertEqual(
+            derive_hf_repo(
+                "The-freezer/Muse-Glimmer-30B-Abliterated-GGUF/Muse-Glimmer-30B-Abliterated-Q4_K_M.gguf"
+            ),
+            "The-freezer/Muse-Glimmer-30B-Abliterated-GGUF",
+        )
+
+    def test_backslashes_are_accepted(self) -> None:
+        self.assertEqual(
+            derive_hf_repo("unsloth\\Qwen3-GGUF\\Qwen3-Q4.gguf"),
+            "unsloth/Qwen3-GGUF",
+        )
+
+    def test_windows_absolute_path_is_rejected(self) -> None:
+        # Would otherwise yield the nonsense owner "D:".
+        self.assertIsNone(derive_hf_repo("D:\\models\\llama\\llama-3.gguf"))
+        self.assertIsNone(derive_hf_repo("C:/Users/example/models/llama-3.gguf"))
+
+    def test_unix_absolute_path_is_rejected(self) -> None:
+        self.assertIsNone(derive_hf_repo("/home/user/models/llama-3.gguf"))
+
+    def test_wrong_segment_count_is_rejected(self) -> None:
+        # A subfolder inside a repo would make owner/repo ambiguous.
+        self.assertIsNone(derive_hf_repo("owner/repo/subdir/model.gguf"))
+        self.assertIsNone(derive_hf_repo("owner/model.gguf"))
+        self.assertIsNone(derive_hf_repo("model.gguf"))
+
+    def test_non_gguf_filename_is_rejected(self) -> None:
+        self.assertIsNone(derive_hf_repo("owner/repo/model.safetensors"))
+
+    def test_missing_path_is_rejected(self) -> None:
+        self.assertIsNone(derive_hf_repo(None))
+        self.assertIsNone(derive_hf_repo(""))
+
+    def test_available_model_prefers_the_reported_repo(self) -> None:
+        # A CLI-reported value beats the derived guess.
+        model = AvailableModel(
+            model_key="a/b.gguf", hf_repo="explicit/repo", path="owner/derived/file.gguf"
+        )
+        self.assertEqual(model.suggested_hf_repo, "explicit/repo")
+
+    def test_available_model_falls_back_to_the_path(self) -> None:
+        model = AvailableModel(model_key="a", path="owner/derived/file.gguf")
+        self.assertEqual(model.suggested_hf_repo, "owner/derived")
+
+    def test_available_model_without_path_has_no_suggestion(self) -> None:
+        self.assertIsNone(AvailableModel(model_key="a").suggested_hf_repo)
+
+    def test_real_fixture_row_yields_a_repo(self) -> None:
+        payload = (FIXTURES / "list_all.json").read_text(encoding="utf-8")
+        registry = parse_registry_json(payload)
+        granite = next(m for m in registry.available if m.model_key == "granite-4.2-30b")
+        self.assertEqual(granite.suggested_hf_repo, "lmstudio-community/granite-4.2-30b-GGUF")
+        # Every row in the real capture follows the same shape, so all should
+        # produce something rather than silently leaving the field blank.
+        self.assertTrue(all(m.suggested_hf_repo for m in registry.available))
 
 
 class ConfigTests(unittest.TestCase):

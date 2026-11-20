@@ -16,6 +16,7 @@ from caplift_ui.models import AvailableModel, WrappedModel
 from caplift_ui.ui.available_view import (
     WRAPPED_ROW_PREFIX,
     build_rows,
+    hf_repo_for_wrap,
     model_from_wrapped,
 )
 
@@ -116,6 +117,31 @@ class ModelFromWrappedTests(unittest.TestCase):
     def test_derives_a_wrapper_id_when_the_registry_lacks_one(self) -> None:
         item = WrappedModel(wrapper_model_id="", model_key="granite-4.2-30b")
         self.assertEqual(model_from_wrapped(item).suggested_wrapper_id, "local/granite-4-2-30b")
+
+
+class HfRepoForWrapTests(unittest.TestCase):
+    """--hf-repo also steers the CLI's template matching, so a guess must not.
+
+    Observed against the real CLI: with a blank base template, adding
+    --hf-repo changed the outcome from "no suitable static base template found"
+    to "base template qwen/qwen3-30b-a3b is not installed" — the flag demonstrably
+    redirects template selection.
+    """
+
+    def test_withheld_when_no_base_template(self) -> None:
+        self.assertIsNone(hf_repo_for_wrap("", "owner/repo"))
+
+    def test_whitespace_base_template_is_still_empty(self) -> None:
+        self.assertIsNone(hf_repo_for_wrap("   ", "owner/repo"))
+
+    def test_sent_once_a_base_template_is_set(self) -> None:
+        self.assertEqual(hf_repo_for_wrap("qwen/qwen3.8-27b", "owner/repo"), "owner/repo")
+
+    def test_nothing_is_sent_when_the_field_is_blank(self) -> None:
+        self.assertIsNone(hf_repo_for_wrap("qwen/qwen3.8-27b", ""))
+
+    def test_surrounding_whitespace_is_trimmed(self) -> None:
+        self.assertEqual(hf_repo_for_wrap("qwen/qwen3.8-27b", " owner/repo "), "owner/repo")
 
 
 if __name__ == "__main__":

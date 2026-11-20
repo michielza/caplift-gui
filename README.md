@@ -67,7 +67,12 @@ No prebuilt binary is published yet, so build it (see [Build from source](#build
    - **Wrapper id** — the `local/...` id the wrapper will be registered under. It must not equal the
      model key, or LM Studio hides it as a circular dependency. The UI blocks that case before it
      reaches the CLI.
-   - **Hugging Face repo** — optional; improves template matching and source metadata.
+   - **Hugging Face repo** — optional. Recorded as the wrapper's source in the generated files, so
+     the model is not presented as an anonymous local artifact. Pre-filled by deriving `owner/repo`
+     from the installed file path (`lms ls` reports each model that way), which is correct for
+     anything installed from Hugging Face; edit or clear it if that is not its source. It is only
+     sent once a base template is set, because the CLI also uses this flag to pick a template — and
+     this value is a derivation, not something the CLI verifies.
 3. **Preview (dry run)** first. Nothing is written. You get the exact `manifest.json` and `model.yaml`
    that would be generated.
 4. **Create wrapper**. A confirmation lists the target directory and registry path, then the CLI runs.
