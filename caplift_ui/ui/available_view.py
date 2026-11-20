@@ -1,0 +1,587 @@
+"""Available-models view: browse unwrapped models and create wrappers."""
+from __future__ import annotations
+
+from typing import Dict, List, Optional
+
+import customtkinter as ctk
+
+from ..cli_runner import CliRunner
+from ..models import AvailableModel
+from ..parser import DryRunPreview
+from .dialogs import ConfirmDialog, MessageDialog, PreviewDialog
+from .theme import COLORS, FONTS
+from .widgets import DataTable, LabeledEntry, SectionCard, StatusPill
+
+COLUMNS = (
+    ("model", "Model key", 340),
+    ("wrapper", "Suggested wrapper", 260),
+    ("base", "Base template", 200),
+    ("params", "Size", 110),
+)
+
+
+class AvailableView(ctk.CTkFrame):
+    """Left: installed models. Right: the wrap form for the selected model."""
+
+    def __init__(self, master, app) -> None:
+        super().__init__(master, fg_color="transparent")
+        self.app = app
+
+        self._models: List[AvailableModel] = []
+        self._by_key: Dict[str, AvailableModel] = {}
+        self._selected: Optional[AvailableModel] = None
+        self._last_preview: Optional[DryRunPreview] = None
+        self._filter_text = ""
+
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(1, weight=1)
+
+        self._build_header()
+        self._build_body()
+
+    # ---- construction ---------------------------------------------------
+
+    def _build_header(self) -> None:
+        header = ctk.CTkFrame(self, fg_color="transparent")
+        header.grid(row=0, column=0, sticky="ew", pady=(0, 12))
+        header.grid_columnconfigure(0, weight=1)
+
+        titles = ctk.CTkFrame(header, fg_color="transparent")
+        titles.grid(row=0, column=0, sticky="w")
+        ctk.CTkLabel(
+            titles,
+            text="Available models",
+            font=FONTS.title,
+            text_color=COLORS["text"],
+            anchor="w",
+        ).grid(row=0, column=0, sticky="w")
+        self.count_label = ctk.CTkLabel(
+            titles,
+            text="Installed models that are not wrapped yet. Refresh needs LM Studio running.",
+            font=FONTS.small,
+            text_color=COLORS["text_muted"],
+            anchor="w",
+        )
+        self.count_label.grid(row=1, column=0, sticky="w", pady=(2, 0))
+
+        actions = ctk.CTkFrame(header, fg_color="transparent")
+        actions.grid(row=0, column=1, sticky="e")
+
+        self.search_entry = ctk.CTkEntry(
+            actions,
+            placeholder_text="Filter model keys…",
+            width=240,
+            height=32,
+            font=FONTS.small,
+            fg_color=COLORS["surface_alt"],
+            border_color=COLORS["border"],
+            text_color=COLORS["text"],
+        )
+        self.search_entry.grid(row=0, column=0, padx=(0, 10))
+        self.search_entry.bind("<KeyRelease>", self._on_filter_changed)
+
+        self.hf_switch = ctk.CTkSwitch(
+            actions,
+            text="Hugging Face metadata",
+            font=FONTS.small,
+            text_color=COLORS["text_muted"],
+            progress_color=COLORS["accent"],
+            button_color=COLORS["text"],
+            button_hover_color=COLORS["accent_hover"],
+            command=self._on_hf_toggled,
+        )
+        self.hf_switch.grid(row=0, column=1, padx=(0, 12))
+        if self.app.app_config.use_huggingface:
+            self.hf_switch.select()
+        else:
+            self.hf_switch.deselect()
+
+        self.refresh_button = ctk.CTkButton(
+            actions,
+            text="Refresh",
+            width=110,
+            height=32,
+            font=FONTS.body,
+            fg_color=COLORS["accent"],
+            hover_color=COLORS["accent_hover"],
+            text_color=COLORS["accent_text"],
+            command=self.refresh,
+        )
+        self.refresh_button.grid(row=0, column=2)
+
+    def _build_body(self) -> None:
+        body = ctk.CTkFrame(self, fg_color="transparent")
+        body.grid(row=1, column=0, sticky="nsew")
+        body.grid_columnconfigure(0, weight=3)
+        body.grid_columnconfigure(1, weight=2, minsize=400)
+        body.grid_rowconfigure(0, weight=1)
+
+        table_card = SectionCard(body, padding=8)
+        table_card.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
+        self.table = DataTable(
+            table_card.body,
+            columns=COLUMNS,
+            on_select=self._on_row_selected,
+        )
+        self.table.grid(row=0, column=0, sticky="nsew")
+        table_card.body.grid_rowconfigure(0, weight=1)
+
+        self.wrap_card = SectionCard(
+            body,
+            title="Create wrapper",
+            subtitle="Copies a Hub model profile and repoints it at the selected model.",
+            subtitle_wraplength=330,
+        )
+        self.wrap_card.grid(row=0, column=1, sticky="nsew")
+        self.wrap_card.body.grid_rowconfigure(0, weight=1)
+
+        # Scrollable: the form must not clip at small window heights or at the
+        # higher DPI scaling Windows applies on large displays.
+        panel = ctk.CTkScrollableFrame(self.wrap_card.body, fg_color="transparent")
+        panel.grid(row=0, column=0, sticky="nsew")
+        panel.grid_columnconfigure(0, weight=1)
+        row = 0
+
+        self.model_title = ctk.CTkLabel(
+            panel,
+            text="Select a model from the list.",
+            font=FONTS.body_bold,
+            text_color=COLORS["text_muted"],
+            anchor="w",
+            justify="left",
+            wraplength=340,
+        )
+        self.model_title.grid(row=row, column=0, sticky="ew")
+        row += 1
+
+        self.model_label = ctk.CTkLabel(
+            panel,
+            text="",
+            font=FONTS.mono_small,
+            text_color=COLORS["text_dim"],
+            anchor="w",
+            justify="left",
+            wraplength=340,
+        )
+        self.model_label.grid(row=row, column=0, sticky="ew", pady=(2, 0))
+        row += 1
+
+        self.model_meta = ctk.CTkLabel(
+            panel,
+            text="",
+            font=FONTS.small,
+            text_color=COLORS["text_dim"],
+            anchor="w",
+            justify="left",
+            wraplength=340,
+        )
+        self.model_meta.grid(row=row, column=0, sticky="ew", pady=(4, 0))
+        row += 1
+
+        self.base_field = LabeledEntry(
+            panel,
+            label="Base template (--base-model-id)",
+            hint="Capability profile to copy, in owner/name form.",
+            placeholder="owner/name",
+            hint_wraplength=340,
+        )
+        self.base_field.grid(row=row, column=0, sticky="ew", pady=(12, 0))
+        self.base_field.bind_change(self._on_fields_changed)
+        row += 1
+
+        self.wrapper_field = LabeledEntry(
+            panel,
+            label="Wrapper id (--wrapper-model-id)",
+            hint="Must not equal the model key, or LM Studio hides it as a circular dependency.",
+            placeholder="local/name",
+            hint_wraplength=340,
+        )
+        self.wrapper_field.grid(row=row, column=0, sticky="ew", pady=(12, 0))
+        self.wrapper_field.bind_change(self._on_fields_changed)
+        row += 1
+
+        self.hf_field = LabeledEntry(
+            panel,
+            label="Hugging Face repo (--hf-repo, optional)",
+            hint="Exact source repo, e.g. unsloth/Qwen3.5-35B-A3B-GGUF.",
+            placeholder="owner/repo",
+            hint_wraplength=340,
+        )
+        self.hf_field.grid(row=row, column=0, sticky="ew", pady=(12, 0))
+        row += 1
+
+        self.force_switch = ctk.CTkSwitch(
+            panel,
+            text="Allow overwriting existing files (--force)",
+            font=FONTS.small,
+            text_color=COLORS["text_muted"],
+            progress_color=COLORS["warn"],
+            button_color=COLORS["text"],
+            button_hover_color=COLORS["accent_hover"],
+        )
+        self.force_switch.grid(row=row, column=0, sticky="w", pady=(14, 0))
+        if self.app.app_config.force_overwrite_by_default:
+            self.force_switch.select()
+        row += 1
+
+        self.validation_label = ctk.CTkLabel(
+            panel,
+            text="",
+            font=FONTS.small,
+            text_color=COLORS["error"],
+            anchor="w",
+            justify="left",
+            wraplength=360,
+        )
+        self.validation_label.grid(row=row, column=0, sticky="ew", pady=(10, 0))
+        self.validation_label.grid_remove()
+        row += 1
+
+        buttons = ctk.CTkFrame(panel, fg_color="transparent")
+        buttons.grid(row=row, column=0, sticky="ew", pady=(16, 0))
+        buttons.grid_columnconfigure(0, weight=1)
+
+        self.preview_button = ctk.CTkButton(
+            buttons,
+            text="Preview (dry run)",
+            height=36,
+            font=FONTS.body,
+            fg_color="transparent",
+            hover_color=COLORS["surface_hi"],
+            text_color=COLORS["text"],
+            border_width=1,
+            border_color=COLORS["border_hi"],
+            state="disabled",
+            command=self.preview_selected,
+        )
+        self.preview_button.grid(row=0, column=0, sticky="ew", padx=(0, 8))
+
+        self.create_button = ctk.CTkButton(
+            buttons,
+            text="Create wrapper",
+            height=36,
+            font=FONTS.body_bold,
+            fg_color=COLORS["accent"],
+            hover_color=COLORS["accent_hover"],
+            text_color=COLORS["accent_text"],
+            state="disabled",
+            command=self.create_selected,
+        )
+        self.create_button.grid(row=0, column=1, sticky="ew")
+
+        self.state_pill = StatusPill(panel, text="No selection", tone="neutral")
+        self.state_pill.grid(row=row + 1, column=0, sticky="w", pady=(12, 0))
+
+        self._set_form_enabled(False)
+
+    # ---- data loading ---------------------------------------------------
+
+    def refresh(self) -> None:
+        """Reload the installed-model list (requires LM Studio for ``--all``)."""
+        use_hf = bool(self.hf_switch.get())
+        self.refresh_button.configure(state="disabled", text="Loading…")
+        self.app.log("list --all --json", "command")
+
+        def work():
+            runner: CliRunner = self.app.build_runner()
+            return runner.list_registry(include_available=True, use_huggingface=use_hf)
+
+        def done(registry):
+            self.refresh_button.configure(state="normal", text="Refresh")
+            self.set_models(registry.available)
+            self.app.on_registry_loaded(registry)
+            self.app.log(
+                f"Loaded {registry.available_count} available and {registry.wrapped_count} wrapped model(s).",
+                "ok",
+            )
+
+        def failed(exc):
+            self.refresh_button.configure(state="normal", text="Refresh")
+            self.app.report_error("Could not list models", exc)
+            self.count_label.configure(
+                text="Could not load the model list. See Output below.",
+                text_color=COLORS["warn"],
+            )
+
+        self.app.run_task(work, on_success=done, on_error=failed, label="list models")
+
+    def set_models(self, models) -> None:
+        self._models = list(models)
+        self._by_key = {model.model_key: model for model in self._models}
+        self._selected = None
+        self._last_preview = None
+        self._set_form_enabled(False)
+        self._render_rows()
+        total = len(self._models)
+        missing = sum(1 for model in self._models if not model.has_base_template)
+        if total == 0:
+            self.count_label.configure(
+                text="Nothing to wrap: every installed LLM already has a wrapper, or none are installed.",
+                text_color=COLORS["text_muted"],
+            )
+        else:
+            message = f"{total} model(s) without a wrapper"
+            if missing:
+                message += f" · {missing} need an explicit base template"
+            self.count_label.configure(text=message, text_color=COLORS["text_muted"])
+
+    def _render_rows(self) -> None:
+        needle = self._filter_text.strip().lower()
+        rows = []
+        for model in self._models:
+            if needle and needle not in model.model_key.lower():
+                continue
+            base = model.base_model_id or "N/A — pick one"
+            tag = "normal" if model.has_base_template else "missing_template"
+            rows.append(
+                (
+                    model.model_key,
+                    (
+                        model.model_key,
+                        model.suggested_wrapper_id,
+                        base,
+                        model.params_string or "—",
+                    ),
+                    tag,
+                )
+            )
+        self.table.set_rows(rows)
+        if self._filter_text:
+            self.count_label.configure(
+                text=f"Showing {len(rows)} of {len(self._models)} model(s).",
+                text_color=COLORS["text_muted"],
+            )
+
+    def _on_filter_changed(self, _event=None) -> None:
+        self._filter_text = self.search_entry.get()
+        self._render_rows()
+
+    def _on_hf_toggled(self) -> None:
+        self.app.app_config.use_huggingface = bool(self.hf_switch.get())
+        self.app.save_config()
+        hint = "on — refresh will fetch model cards" if self.hf_switch.get() else "off"
+        self.app.log(f"Hugging Face metadata {hint}.", "info")
+
+    # ---- selection ------------------------------------------------------
+
+    def _on_row_selected(self, row_id: Optional[str]) -> None:
+        if not row_id or row_id not in self._by_key:
+            self._selected = None
+            self._set_form_enabled(False)
+            self.state_pill.set_state("No selection", "neutral")
+            return
+
+        model = self._by_key[row_id]
+        self._selected = model
+        self._last_preview = None
+
+        self.model_title.configure(
+            text=model.display_name or model.model_key,
+            text_color=COLORS["text"],
+        )
+        self.model_label.configure(text=model.model_key, text_color=COLORS["text_dim"])
+        meta_lines = [line for line in (model.summary, model.path) if line]
+        self.model_meta.configure(text="\n".join(meta_lines))
+
+        # Enable first: a disabled entry ignores writes, so populating before
+        # this point would leave the fields looking empty.
+        self._set_form_enabled(True)
+        self.base_field.set(model.base_model_id or self.app.last_base_template() or "")
+        self.wrapper_field.set(model.suggested_wrapper_id)
+        self.hf_field.set(model.hf_repo or "")
+
+        if model.has_base_template:
+            self.state_pill.set_state(f"Base template suggested: {model.base_model_id}", "accent")
+        else:
+            self.state_pill.set_state("No static match — set a base template", "warn")
+        self._on_fields_changed()
+
+    def _set_form_enabled(self, enabled: bool) -> None:
+        for field in (self.base_field, self.wrapper_field, self.hf_field):
+            field.set_enabled(enabled)
+        self.force_switch.configure(state="normal" if enabled else "disabled")
+        self.preview_button.configure(state="normal" if enabled else "disabled")
+        self.create_button.configure(state="normal" if enabled else "disabled")
+        if not enabled:
+            self.model_title.configure(text="Select a model from the list.", text_color=COLORS["text_muted"])
+            self.model_label.configure(text="")
+            self.model_meta.configure(text="")
+
+    # ---- validation -----------------------------------------------------
+
+    def _on_fields_changed(self) -> None:
+        """Live-validate the form: blockers disable the buttons, warnings do not."""
+        if self._selected is None:
+            return
+
+        blockers = self.collect_blockers()
+        problems = self.collect_problems()
+
+        if blockers:
+            self.validation_label.configure(text=blockers[0], text_color=COLORS["error"])
+            self.validation_label.grid()
+            self.create_button.configure(state="disabled")
+            self.preview_button.configure(state="disabled")
+            return
+
+        self.create_button.configure(state="normal")
+        self.preview_button.configure(state="normal")
+        if problems:
+            self.validation_label.configure(text=problems[0], text_color=COLORS["warn"])
+            self.validation_label.grid()
+        else:
+            self.validation_label.grid_remove()
+
+    def collect_problems(self) -> List[str]:
+        """Warnings that do not stop a dry run."""
+        notes: List[str] = []
+        if self._selected is None:
+            return notes
+        base = self.base_field.get()
+        if not base:
+            notes.append(
+                "No base template set. The CLI will try to match one itself and will fail "
+                "if it cannot — set one explicitly to be safe."
+            )
+        elif "/" not in base:
+            notes.append("Base template should look like owner/name.")
+        wrapper = self.wrapper_field.get()
+        if wrapper and "/" not in wrapper:
+            notes.append("Wrapper id should look like owner/name.")
+        return notes
+
+    def collect_blockers(self) -> List[str]:
+        """Errors that make the wrap invalid before it is even attempted."""
+        problems: List[str] = []
+        if self._selected is None:
+            return ["No model selected."]
+        base = self.base_field.get()
+        model_key = self._selected.model_key
+        if base and base == model_key:
+            problems.append(
+                "The base template equals the model key. That creates a circular dependency "
+                "and LM Studio will hide the wrapper. Use a different wrapper id or base template."
+            )
+        wrapper = self.wrapper_field.get()
+        if wrapper and wrapper == model_key:
+            problems.append(
+                "Wrapper id equals the model key. LM Studio requires model != base.key; pick a local/ name."
+            )
+        return problems
+
+    # ---- actions --------------------------------------------------------
+
+    def preview_selected(self) -> None:
+        model = self._selected
+        if model is None:
+            return
+        blockers = self.collect_blockers()
+        if blockers:
+            MessageDialog.show(self.app, "Cannot preview", blockers[0], tone="error")
+            return
+
+        base = self.base_field.get() or None
+        wrapper = self.wrapper_field.get() or None
+        hf_repo = self.hf_field.get() or None
+
+        def work():
+            runner: CliRunner = self.app.build_runner()
+            return runner.preview_wrap(
+                model_key=model.model_key,
+                wrapper_model_id=wrapper,
+                base_model_id=base,
+                hf_repo=hf_repo,
+            )
+
+        def done(preview: DryRunPreview):
+            self._last_preview = preview
+            self.app.log(f"$ wrap {model.model_key} --dry-run", "command")
+            self.app.log(
+                f"{len(preview.files)} file(s) would be written to "
+                f"{preview.target_dir or 'the hub models directory'}",
+                "ok" if preview.files else "warn",
+            )
+            PreviewDialog.show(self.app, preview, heading="Dry run preview")
+            if preview.wrapper_model_id and preview.wrapper_model_id != self.wrapper_field.get():
+                self.wrapper_field.set(preview.wrapper_model_id)
+                self.app.log(f"Wrapper id confirmed by CLI: {preview.wrapper_model_id}", "info")
+
+        self.app.run_task(work, on_success=done, on_error=lambda exc: self.app.report_error("Dry run failed", exc), label="dry run")
+
+    def create_selected(self) -> None:
+        model = self._selected
+        if model is None:
+            return
+        blockers = self.collect_blockers()
+        if blockers:
+            MessageDialog.show(self.app, "Cannot create wrapper", blockers[0], tone="error")
+            return
+
+        base = self.base_field.get() or None
+        wrapper = self.wrapper_field.get() or None
+        hf_repo = self.hf_field.get() or None
+        force = bool(self.force_switch.get())
+
+        details = [
+            f"model key:      {model.model_key}",
+            f"wrapper id:     {wrapper or '(CLI default)'}",
+            f"base template:  {base or '(CLI auto-match)'}",
+        ]
+        if hf_repo:
+            details.append(f"hf repo:        {hf_repo}")
+        if self._last_preview is not None:
+            if self._last_preview.target_dir:
+                details.append(f"target dir:     {self._last_preview.target_dir}")
+            if self._last_preview.registry_path:
+                details.append(f"registry:       {self._last_preview.registry_path}")
+        details.append(f"mode:           {'overwrite existing files' if force else 'refuse to overwrite'}")
+
+        if not ConfirmDialog.ask(
+            self.app,
+            title="Create wrapper",
+            body=(
+                "Write the wrapper model files and update the caplift registry?"
+                if force
+                else "Write the wrapper model files and update the caplift registry? "
+                "Existing files at the target will not be replaced."
+            ),
+            detail_lines=details,
+            confirm_text="Create wrapper",
+            danger=force,
+        ):
+            self.app.log("Wrap cancelled.", "info")
+            return
+
+        def work():
+            runner: CliRunner = self.app.build_runner()
+            return runner.wrap(
+                model_key=model.model_key,
+                wrapper_model_id=wrapper,
+                base_model_id=base,
+                hf_repo=hf_repo,
+                force=force,
+            )
+
+        def done(result):
+            self.app.log(f"$ {result.command_line}", "command")
+            if result.stdout.strip():
+                self.app.log(result.stdout.strip(), "stdout")
+            if result.stderr.strip():
+                self.app.log(result.stderr.strip(), "stderr")
+            self.app.log("Wrapper created. Restart LM Studio, then select the local/… model.", "ok")
+            if base:
+                self.app.app_config.remember("recent_base_templates", base)
+            if hf_repo:
+                self.app.app_config.remember("recent_hf_repos", hf_repo)
+            self.app.save_config()
+            self.app.notify_wrappers_changed()
+            MessageDialog.show(
+                self.app,
+                "Wrapper created",
+                f"{wrapper or model.model_key} is ready. Restart LM Studio to see it under local/ models.",
+                detail_lines=[result.stdout.strip()] if result.stdout.strip() else [],
+                tone="ok",
+            )
+            self.refresh()
+
+        self.app.run_task(work, on_success=done, on_error=lambda exc: self.app.report_error("Wrap failed", exc), label="wrap")
