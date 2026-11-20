@@ -9,7 +9,7 @@ import customtkinter as ctk
 from ..config import config_path, find_cli
 from ..cli_runner import CliRunner
 from ..tasks import describe_exception
-from .dialogs import MessageDialog
+from .dialogs import ConfirmDialog, MessageDialog
 from .theme import COLORS, FONTS
 from .widgets import LabeledEntry, SectionCard, StatusPill
 
@@ -283,7 +283,7 @@ class SettingsView(ctk.CTkFrame):
             return
         hub = self.hub_field.get() or None
         if hub and not Path(hub).is_dir():
-            if not MessageDialog.ask(
+            if not ConfirmDialog.ask(
                 self.app,
                 "Directory does not exist",
                 f"{hub} does not exist yet. Save it anyway?",
@@ -292,7 +292,7 @@ class SettingsView(ctk.CTkFrame):
                 return
         lms = self.lms_field.get() or None
         if lms and not Path(lms).is_file():
-            if not MessageDialog.ask(
+            if not ConfirmDialog.ask(
                 self.app,
                 "lms executable not found",
                 f"{lms} does not exist. Save it anyway?",

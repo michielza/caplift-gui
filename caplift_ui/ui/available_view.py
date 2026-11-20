@@ -446,6 +446,14 @@ class AvailableView(ctk.CTkFrame):
         elif "/" not in base:
             notes.append("Base template should look like owner/name.")
         wrapper = self.wrapper_field.get()
+        if wrapper and base and wrapper == base:
+            # Not the circular-dependency case (that is wrapper == model key,
+            # which is a blocker below). This one targets the template's own
+            # directory, so it could overwrite the model it copies from.
+            notes.append(
+                f"Wrapper id and base template are both {wrapper}. The wrapper would be written "
+                "into that model's own folder, risking the template it copies from — use a local/ name."
+            )
         if wrapper and "/" not in wrapper:
             notes.append("Wrapper id should look like owner/name.")
         return notes
