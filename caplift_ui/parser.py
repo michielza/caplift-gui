@@ -300,11 +300,3 @@ def describe_cli_error(stderr: str, stdout: str = "") -> str:
         None,
     )
     return first_error or combined.splitlines()[0].strip()
-
-
-def find_wrapped_for(registry: RegistryView, model_key: str) -> Optional[WrappedModel]:
-    """Return the tracked wrapper that wraps ``model_key``, if any."""
-    for wrapped in registry.wrapped:
-        if wrapped.model_key == model_key:
-            return wrapped
-    return None

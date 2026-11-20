@@ -199,7 +199,7 @@ class CliRunner:
         hf_repo: Optional[str] = None,
         dry_run: bool = False,
         force: bool = False,
-    ):
+    ) -> CliResult:
         """Run ``wrap`` for one model."""
         args: List[str] = ["wrap", model_key, *self._global_options()]
         if wrapper_model_id:
