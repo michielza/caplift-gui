@@ -1,16 +1,19 @@
 """Available-models view: browse unwrapped models and create wrappers."""
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Dict, List, Optional
 
 import customtkinter as ctk
 
 from ..cli_runner import CliRunner
+from ..config import resolve_hub_models_dir
 from ..models import AvailableModel
 from ..parser import DryRunPreview
+from ..templates import TemplateCheck, check_template, find_installed_templates
 from .dialogs import ConfirmDialog, MessageDialog, PreviewDialog
 from .theme import COLORS, FONTS
-from .widgets import DataTable, LabeledEntry, SectionCard, StatusPill
+from .widgets import DataTable, LabeledCombo, LabeledEntry, SectionCard, StatusPill
 
 COLUMNS = (
     ("model", "Model key", 340),
@@ -32,6 +35,7 @@ class AvailableView(ctk.CTkFrame):
         self._selected: Optional[AvailableModel] = None
         self._last_preview: Optional[DryRunPreview] = None
         self._filter_text = ""
+        self._hub_dir: Optional[Path] = None
 
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(1, weight=1)
@@ -178,15 +182,14 @@ class AvailableView(ctk.CTkFrame):
         self.model_meta.grid(row=row, column=0, sticky="ew", pady=(4, 0))
         row += 1
 
-        self.base_field = LabeledEntry(
+        self.base_field = LabeledCombo(
             panel,
             label="Base template (--base-model-id)",
             hint="Capability profile to copy, in owner/name form.",
-            placeholder="owner/name",
             hint_wraplength=340,
+            on_change=self._on_fields_changed,
         )
         self.base_field.grid(row=row, column=0, sticky="ew", pady=(12, 0))
-        self.base_field.bind_change(self._on_fields_changed)
         row += 1
 
         self.wrapper_field = LabeledEntry(
@@ -273,6 +276,57 @@ class AvailableView(ctk.CTkFrame):
         self.state_pill.grid(row=row + 1, column=0, sticky="w", pady=(12, 0))
 
         self._set_form_enabled(False)
+        self.refresh_template_choices()
+
+    def on_shown(self) -> None:
+        """Re-scan installed templates: the hub directory can change in Settings."""
+        self.refresh_template_choices()
+
+    def refresh_template_choices(self) -> None:
+        """Fill the base-template dropdown from the hub models directory.
+
+        Official Hub models come first because those are the ones worth copying
+        from; wrappers keep working but are listed after. Recently used ids are
+        appended so a template the user typed earlier is not lost from the list.
+        """
+        hub_dir = resolve_hub_models_dir(self.app.app_config.hub_models_dir)
+        self._hub_dir = hub_dir
+        templates = find_installed_templates(hub_dir)
+        groups = (
+            [t.model_id for t in templates if not t.is_wrapper],
+            [t.model_id for t in templates if t.is_wrapper],
+            [m for m in self.app.app_config.recent_base_templates if m],
+        )
+        values: List[str] = []
+        for group in groups:
+            for model_id in group:
+                if model_id not in values:
+                    values.append(model_id)
+        self.base_field.set_values(values)
+        self._update_base_hint()
+
+    def _template_check(self) -> TemplateCheck:
+        return check_template(self._hub_dir, self.base_field.get())
+
+    def _update_base_hint(self) -> None:
+        """Say whether the current base template is actually installed.
+
+        Mirrors the CLI's own test, so a typo is caught here instead of coming
+        back as a one-line error after a subprocess round trip.
+        """
+        if not self.base_field.get():
+            self.base_field.reset_hint()
+            return
+        check = self._template_check()
+        if not check.checked:
+            self.base_field.set_hint(
+                "Could not find the hub models directory, so this was not verified.",
+                "muted",
+            )
+        elif check.found:
+            self.base_field.set_hint(f"Installed at {check.path}", "ok")
+        else:
+            self.base_field.set_hint(check.reason, "error")
 
     # ---- data loading ---------------------------------------------------
 
@@ -411,6 +465,7 @@ class AvailableView(ctk.CTkFrame):
 
     def _on_fields_changed(self) -> None:
         """Live-validate the form: blockers disable the buttons, warnings do not."""
+        self._update_base_hint()
         if self._selected is None:
             return
 
@@ -443,8 +498,6 @@ class AvailableView(ctk.CTkFrame):
                 "No base template set. The CLI will try to match one itself and will fail "
                 "if it cannot — set one explicitly to be safe."
             )
-        elif "/" not in base:
-            notes.append("Base template should look like owner/name.")
         wrapper = self.wrapper_field.get()
         if wrapper and base and wrapper == base:
             # Not the circular-dependency case (that is wrapper == model key,
@@ -475,6 +528,12 @@ class AvailableView(ctk.CTkFrame):
             problems.append(
                 "Wrapper id equals the model key. LM Studio requires model != base.key; pick a local/ name."
             )
+        # A base template that is not installed makes the CLI fail outright, so
+        # it is a blocker rather than a warning. Skipped entirely when no hub
+        # directory could be located: not knowing is not evidence of absence.
+        check = self._template_check()
+        if base and check.checked and not check.found:
+            problems.append(check.reason)
         return problems
 
     # ---- actions --------------------------------------------------------

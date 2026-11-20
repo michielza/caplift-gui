@@ -72,6 +72,42 @@ def config_path() -> Path:
     return app_dir() / CONFIG_FILENAME
 
 
+def default_hub_models_dirs() -> List[Path]:
+    """Where LM Studio keeps hub models when nothing is configured.
+
+    The ``.cache`` shape is the older layout; both appear in the wild and the
+    CLI treats the first as primary, so the order is meaningful.
+    """
+    home = Path.home()
+    return [
+        home / ".lmstudio" / "hub" / "models",
+        home / ".cache" / "lm-studio" / "hub" / "models",
+    ]
+
+
+def hub_models_dir_candidates(configured: Optional[str] = None) -> List[Path]:
+    """Directories to try, most authoritative first.
+
+    A configured value wins outright — it is what gets passed to the CLI as
+    ``--hub-models-dir``, so nothing else should be consulted.
+    """
+    if configured:
+        return [Path(configured).expanduser()]
+    return default_hub_models_dirs()
+
+
+def resolve_hub_models_dir(configured: Optional[str] = None) -> Optional[Path]:
+    """The hub models directory that actually exists, or None.
+
+    Deliberately does not create anything or guess: callers use None to mean
+    "cannot verify", which is different from "not there".
+    """
+    for candidate in hub_models_dir_candidates(configured):
+        if candidate.is_dir():
+            return candidate
+    return None
+
+
 @dataclass
 class WindowConfig:
     width: int = 1200

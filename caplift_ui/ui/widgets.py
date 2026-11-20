@@ -1,6 +1,7 @@
 """Reusable widgets shared by the views."""
 from __future__ import annotations
 
+import tkinter as tk
 from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import customtkinter as ctk
@@ -186,6 +187,133 @@ class LabeledEntry(ctk.CTkFrame):
 
     def set_enabled(self, enabled: bool) -> None:
         self.entry.configure(state="normal" if enabled else "disabled")
+
+
+class LabeledCombo(ctk.CTkFrame):
+    """A label above an editable dropdown, with a hint line underneath.
+
+    Editable on purpose: the list offers what is installed, but a template can
+    still be typed by hand. A StringVar drives everything, so typing, picking
+    from the list, and programmatic ``set()`` all report through the same
+    callback — the combobox's own ``command`` only fires on selection.
+    """
+
+    def __init__(
+        self,
+        master,
+        label: str,
+        values: Sequence[str] = (),
+        hint: str = "",
+        placeholder: str = "",
+        hint_wraplength: int = 520,
+        on_change: Optional[Callable[[], None]] = None,
+        **kwargs,
+    ) -> None:
+        super().__init__(master, fg_color="transparent", **kwargs)
+        self.grid_columnconfigure(0, weight=1)
+
+        self._default_hint = hint
+        self._callbacks: List[Callable[[], None]] = []
+        if on_change is not None:
+            self._callbacks.append(on_change)
+
+        ctk.CTkLabel(
+            self,
+            text=label,
+            font=FONTS.small_bold,
+            text_color=COLORS["text_muted"],
+            anchor="w",
+        ).grid(row=0, column=0, sticky="w")
+
+        self.variable = tk.StringVar(value="")
+        self.combo = ctk.CTkComboBox(
+            self,
+            values=list(values) or [""],
+            variable=self.variable,
+            font=FONTS.mono,
+            dropdown_font=FONTS.mono,
+            fg_color=COLORS["surface_alt"],
+            border_color=COLORS["border"],
+            button_color=COLORS["border_hi"],
+            button_hover_color=COLORS["accent"],
+            dropdown_fg_color=COLORS["surface_alt"],
+            dropdown_hover_color=COLORS["surface_hi"],
+            dropdown_text_color=COLORS["text"],
+            text_color=COLORS["text"],
+            height=32,
+        )
+        self.combo.grid(row=1, column=0, sticky="ew", pady=(4, 0))
+        if placeholder:
+            self.combo.configure(values=list(values) or [""])
+        self.variable.trace_add("write", self._on_variable_write)
+
+        self.hint = ctk.CTkLabel(
+            self,
+            text=hint,
+            font=FONTS.small,
+            text_color=COLORS["text_dim"],
+            anchor="w",
+            justify="left",
+            wraplength=hint_wraplength,
+        )
+        self.hint.grid(row=2, column=0, sticky="w", pady=(3, 0))
+        if not hint:
+            self.hint.grid_remove()
+
+    # ---- passthroughs --------------------------------------------------
+
+    def get(self) -> str:
+        return self.variable.get().strip()
+
+    def set(self, value: str) -> None:
+        """Replace the contents, working even while the widget is disabled."""
+        if self.get() == value:
+            return
+        try:
+            previous_state = self.combo.cget("state")
+        except Exception:  # pragma: no cover - cget is best-effort
+            previous_state = "normal"
+        if previous_state == "disabled":
+            self.combo.configure(state="normal")
+        try:
+            self.combo.set(value)
+        finally:
+            if previous_state == "disabled":
+                self.combo.configure(state=previous_state)
+
+    def set_values(self, values: Sequence[str]) -> None:
+        """Replace the dropdown options, keeping any current value selectable."""
+        options = [option for option in values if option]
+        current = self.get()
+        if current and current not in options:
+            options.append(current)
+        self.combo.configure(values=options or [""])
+
+    def set_hint(self, text: str, tone: str = "muted") -> None:
+        color = {
+            "muted": COLORS["text_dim"],
+            "ok": COLORS["ok"],
+            "warn": COLORS["warn"],
+            "error": COLORS["error"],
+        }.get(tone, COLORS["text_dim"])
+        self.hint.configure(text=text, text_color=color)
+        if text:
+            self.hint.grid()
+        else:
+            self.hint.grid_remove()
+
+    def reset_hint(self) -> None:
+        self.set_hint(self._default_hint, "muted")
+
+    def bind_change(self, callback: Callable[[], None]) -> None:
+        self._callbacks.append(callback)
+
+    def set_enabled(self, enabled: bool) -> None:
+        self.combo.configure(state="normal" if enabled else "disabled")
+
+    def _on_variable_write(self, *_args) -> None:
+        for callback in list(self._callbacks):
+            callback()
 
 
 class DataTable(ctk.CTkFrame):

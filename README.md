@@ -56,9 +56,14 @@ No prebuilt binary is published yet, so build it (see [Build from source](#build
 
 1. Start LM Studio. Press **Refresh** on the Available models view.
 2. Pick a model. The right-hand panel fills in:
-   - **Base template** — the capability profile to copy. The CLI pre-selects one when it can match
-     confidently; when it cannot, the row is highlighted and shows `N/A — pick one`, and you must
-     set this yourself.
+   - **Base template** — the capability profile to copy, and the one field worth understanding:
+     it must be an **LM Studio Hub model that is already installed**, because the wrapper is built
+     by copying that model's `manifest.json` and `model.yaml`. The field is a dropdown built by
+     scanning your hub models directory — official models first, caplift wrappers after — but you
+     can still type any `owner/name` by hand. Whatever you enter is checked against that directory,
+     so a template that is not installed is reported *before* the CLI is invoked (and Create is
+     blocked, since the CLI would fail outright). Rows where the CLI found no match show
+     `N/A — pick one`.
    - **Wrapper id** — the `local/...` id the wrapper will be registered under. It must not equal the
      model key, or LM Studio hides it as a circular dependency. The UI blocks that case before it
      reaches the CLI.
