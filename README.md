@@ -72,6 +72,12 @@ No prebuilt binary is published yet, so build it (see [Build from source](#build
    that would be generated.
 4. **Create wrapper**. A confirmation lists the target directory and registry path, then the CLI runs.
 5. Restart LM Studio and select the `local/...` model.
+6. **To repair or recreate a wrapper**, tick **Show already-wrapped models**. A wrapped model leaves
+   the available list once it is created, so this is the only way to select it again. The form then
+   pre-fills with that wrapper's existing id and base template, and *Allow overwriting* is ticked for
+   you — re-wrapping replaces the files at that target, which is what you want when a wrapper was
+   built from the wrong template. Untick it and the UI blocks the attempt rather than letting the CLI
+   refuse.
 
 ## Settings
 
@@ -172,6 +178,13 @@ in a Tk callback as a failure — useful after touching layout code, which is ha
 
 ## Known limits
 
+- **A wrapper inherits its capability metadata from the base template, not from the wrapped model.**
+  Context length, memory estimate, and the vision and tool-use flags are copied verbatim, so a
+  wrapper can advertise more than the underlying model can actually do. A real example from this
+  project: a text-only GGUF wrapped from a vision-capable template comes out with `vision: true`.
+  This is inherent to how `lmstudio-caplift` works — borrowing a profile is the whole point — but it
+  means you should check the template if a particular limit matters to you. Re-wrap with a better
+  template if it is wrong.
 - **No uninstall.** `lmstudio-caplift` has no remove command, so the UI does not pretend to have one.
   The Wrapped models view shows the target folder (with an *Open target folder* button) and the
   registry entry, which are the two things you delete by hand.

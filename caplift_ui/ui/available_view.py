@@ -2,13 +2,13 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import customtkinter as ctk
 
 from ..cli_runner import CliRunner
 from ..config import resolve_hub_models_dir
-from ..models import AvailableModel
+from ..models import AvailableModel, RegistryView, WrappedModel
 from ..parser import DryRunPreview
 from ..templates import TemplateCheck, check_template, find_installed_templates
 from .dialogs import ConfirmDialog, MessageDialog, PreviewDialog
@@ -22,6 +22,77 @@ COLUMNS = (
     ("params", "Size", 110),
 )
 
+# Wrapped rows are keyed with a prefix. A model is either available or already
+# wrapped, never both, but the prefix guarantees the two maps cannot collide.
+WRAPPED_ROW_PREFIX = "wrapped::"
+
+
+def model_from_wrapped(item: WrappedModel) -> AvailableModel:
+    """Present a registry entry in the shape the wrap form expects.
+
+    Deliberately reuses the existing wrapper id: re-wrapping repairs that
+    wrapper instead of quietly creating a second one alongside it.
+    """
+    return AvailableModel(
+        model_key=item.model_key,
+        wrapper_model_id=item.wrapper_model_id,
+        base_model_id=item.base_model_id,
+    )
+
+
+def build_rows(
+    available: Sequence[AvailableModel],
+    wrapped: Sequence[WrappedModel],
+    show_wrapped: bool,
+    needle: str = "",
+) -> List[Tuple[str, Tuple[str, ...], str]]:
+    """Rows for the model table: unwrapped models, then wrappers if asked.
+
+    Pure, so it can be tested without a display. Unwrapped models come first
+    because those are the default workflow; already-wrapped ones follow, with
+    their own tag so the table can dim them and they cannot be mistaken for new
+    work.
+    """
+    search = (needle or "").strip().lower()
+    rows: List[Tuple[str, Tuple[str, ...], str]] = []
+
+    for model in available:
+        if search and search not in model.model_key.lower():
+            continue
+        rows.append(
+            (
+                model.model_key,
+                (
+                    model.model_key,
+                    model.suggested_wrapper_id,
+                    model.base_model_id or "N/A — pick one",
+                    model.params_string or "—",
+                ),
+                "normal" if model.has_base_template else "missing_template",
+            )
+        )
+
+    if show_wrapped:
+        for item in wrapped:
+            if search and search not in item.model_key.lower():
+                continue
+            rows.append(
+                (
+                    f"{WRAPPED_ROW_PREFIX}{item.wrapper_model_id}",
+                    (
+                        item.model_key,
+                        item.wrapper_model_id,
+                        item.base_model_id or "—",
+                        # The Size column has no meaning for a registry entry, and
+                        # the wrapped view already shows its timestamps.
+                        "—",
+                    ),
+                    "wrapped",
+                )
+            )
+
+    return rows
+
 
 class AvailableView(ctk.CTkFrame):
     """Left: installed models. Right: the wrap form for the selected model."""
@@ -32,7 +103,11 @@ class AvailableView(ctk.CTkFrame):
 
         self._models: List[AvailableModel] = []
         self._by_key: Dict[str, AvailableModel] = {}
+        self._wrapped_rows: Dict[str, WrappedModel] = {}
+        self._wrapped_count = 0
+        self._show_wrapped = False
         self._selected: Optional[AvailableModel] = None
+        self._selected_is_wrapped = False
         self._last_preview: Optional[DryRunPreview] = None
         self._filter_text = ""
         self._hub_dir: Optional[Path] = None
@@ -67,6 +142,21 @@ class AvailableView(ctk.CTkFrame):
             anchor="w",
         )
         self.count_label.grid(row=1, column=0, sticky="w", pady=(2, 0))
+
+        # Wrapped models disappear from the available list once created, so
+        # without this there is no way to select one again — and therefore no
+        # way to reach --force and repair a wrapper.
+        self.wrapped_switch = ctk.CTkSwitch(
+            titles,
+            text="Show already-wrapped models",
+            font=FONTS.small,
+            text_color=COLORS["text_muted"],
+            progress_color=COLORS["accent"],
+            button_color=COLORS["text"],
+            button_hover_color=COLORS["accent_hover"],
+            command=self._on_show_wrapped_toggled,
+        )
+        self.wrapped_switch.grid(row=2, column=0, sticky="w", pady=(6, 0))
 
         actions = ctk.CTkFrame(header, fg_color="transparent")
         actions.grid(row=0, column=1, sticky="e")
@@ -342,7 +432,7 @@ class AvailableView(ctk.CTkFrame):
 
         def done(registry):
             self.refresh_button.configure(state="normal", text="Refresh")
-            self.set_models(registry.available)
+            self.set_registry(registry)
             self.app.on_registry_loaded(registry)
             self.app.log(
                 f"Loaded {registry.available_count} available and {registry.wrapped_count} wrapped model(s).",
@@ -359,50 +449,56 @@ class AvailableView(ctk.CTkFrame):
 
         self.app.run_task(work, on_success=done, on_error=failed, label="list models")
 
-    def set_models(self, models) -> None:
-        self._models = list(models)
+    def set_registry(self, registry: RegistryView) -> None:
+        """Store both halves of the listing and re-render."""
+        self._models = list(registry.available)
         self._by_key = {model.model_key: model for model in self._models}
+        self._wrapped_rows = {
+            f"{WRAPPED_ROW_PREFIX}{item.wrapper_model_id}": item for item in registry.wrapped
+        }
+        self._wrapped_count = registry.wrapped_count
         self._selected = None
+        self._selected_is_wrapped = False
         self._last_preview = None
         self._set_form_enabled(False)
         self._render_rows()
+        self._render_summary()
+
+    def _on_show_wrapped_toggled(self) -> None:
+        self._show_wrapped = bool(self.wrapped_switch.get())
+        self._render_rows()
+        self._render_summary()
+        self.app.log(
+            f"Already-wrapped models {'shown' if self._show_wrapped else 'hidden'}.",
+            "info",
+        )
+
+    def _render_summary(self) -> None:
+        """Summary line under the title, kept truthful about the toggle state."""
         total = len(self._models)
         missing = sum(1 for model in self._models if not model.has_base_template)
         if total == 0:
-            self.count_label.configure(
-                text="Nothing to wrap: every installed LLM already has a wrapper, or none are installed.",
-                text_color=COLORS["text_muted"],
-            )
+            message = "Nothing to wrap: no unwrapped LLMs are installed."
         else:
             message = f"{total} model(s) without a wrapper"
             if missing:
                 message += f" · {missing} need an explicit base template"
-            self.count_label.configure(text=message, text_color=COLORS["text_muted"])
+        if self._wrapped_count:
+            state = "shown below" if self._show_wrapped else "hidden"
+            message += f" · {self._wrapped_count} already wrapped, {state}"
+        self.count_label.configure(text=message, text_color=COLORS["text_muted"])
 
     def _render_rows(self) -> None:
-        needle = self._filter_text.strip().lower()
-        rows = []
-        for model in self._models:
-            if needle and needle not in model.model_key.lower():
-                continue
-            base = model.base_model_id or "N/A — pick one"
-            tag = "normal" if model.has_base_template else "missing_template"
-            rows.append(
-                (
-                    model.model_key,
-                    (
-                        model.model_key,
-                        model.suggested_wrapper_id,
-                        base,
-                        model.params_string or "—",
-                    ),
-                    tag,
-                )
-            )
+        rows = build_rows(
+            self._models,
+            list(self._wrapped_rows.values()),
+            self._show_wrapped,
+            self._filter_text,
+        )
         self.table.set_rows(rows)
         if self._filter_text:
             self.count_label.configure(
-                text=f"Showing {len(rows)} of {len(self._models)} model(s).",
+                text=f"Showing {len(rows)} of {len(self._models) + self._wrapped_count} model(s).",
                 text_color=COLORS["text_muted"],
             )
 
@@ -419,14 +515,28 @@ class AvailableView(ctk.CTkFrame):
     # ---- selection ------------------------------------------------------
 
     def _on_row_selected(self, row_id: Optional[str]) -> None:
-        if not row_id or row_id not in self._by_key:
+        if not row_id:
             self._selected = None
+            self._selected_is_wrapped = False
             self._set_form_enabled(False)
             self.state_pill.set_state("No selection", "neutral")
             return
 
-        model = self._by_key[row_id]
+        if row_id in self._by_key:
+            model = self._by_key[row_id]
+            wrapped_entry = None
+        elif row_id in self._wrapped_rows:
+            wrapped_entry = self._wrapped_rows[row_id]
+            model = model_from_wrapped(wrapped_entry)
+        else:
+            self._selected = None
+            self._selected_is_wrapped = False
+            self._set_form_enabled(False)
+            self.state_pill.set_state("No selection", "neutral")
+            return
+
         self._selected = model
+        self._selected_is_wrapped = wrapped_entry is not None
         self._last_preview = None
 
         self.model_title.configure(
@@ -434,8 +544,15 @@ class AvailableView(ctk.CTkFrame):
             text_color=COLORS["text"],
         )
         self.model_label.configure(text=model.model_key, text_color=COLORS["text_dim"])
-        meta_lines = [line for line in (model.summary, model.path) if line]
-        self.model_meta.configure(text="\n".join(meta_lines))
+        if wrapped_entry is not None:
+            meta = (
+                f"Already wrapped as {wrapped_entry.wrapper_model_id}\n"
+                f"updated {wrapped_entry.updated_display}"
+            )
+            self.force_switch.select()
+        else:
+            meta = "\n".join(line for line in (model.summary, model.path) if line)
+        self.model_meta.configure(text=meta)
 
         # Enable first: a disabled entry ignores writes, so populating before
         # this point would leave the fields looking empty.
@@ -444,7 +561,9 @@ class AvailableView(ctk.CTkFrame):
         self.wrapper_field.set(model.suggested_wrapper_id)
         self.hf_field.set(model.hf_repo or "")
 
-        if model.has_base_template:
+        if wrapped_entry is not None:
+            self.state_pill.set_state("Already wrapped — recreating will need --force", "warn")
+        elif model.has_base_template:
             self.state_pill.set_state(f"Base template suggested: {model.base_model_id}", "accent")
         else:
             self.state_pill.set_state("No static match — set a base template", "warn")
@@ -534,6 +653,14 @@ class AvailableView(ctk.CTkFrame):
         check = self._template_check()
         if base and check.checked and not check.found:
             problems.append(check.reason)
+        # Re-wrapping targets a directory that already holds manifest.json and
+        # model.yaml, so the CLI refuses without --force. Requiring it up front
+        # beats letting the attempt fail.
+        if self._selected_is_wrapped and not self.force_switch.get():
+            problems.append(
+                "This model is already wrapped, so its files exist at the target. "
+                "Tick “Allow overwriting existing files” to recreate the wrapper."
+            )
         return problems
 
     # ---- actions --------------------------------------------------------
