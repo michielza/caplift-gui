@@ -60,10 +60,14 @@ class SettingsView(ctk.CTkFrame):
         self.cli_field = LabeledEntry(
             body,
             label="Override path (optional)",
-            hint="Leave blank to use the executable found next to this UI.",
+            hint=(
+                "Blank means the executable beside this UI. Changes take effect immediately; "
+                "press Save settings to keep them for the next launch."
+            ),
             placeholder=r"C:\path\to\lmstudio-caplift.exe",
         )
         self.cli_field.grid(row=1, column=0, sticky="ew", pady=(12, 0))
+        self.cli_field.bind_change(self.on_cli_path_changed)
 
         buttons = ctk.CTkFrame(body, fg_color="transparent")
         buttons.grid(row=2, column=0, sticky="ew", pady=(10, 0))
@@ -242,6 +246,25 @@ class SettingsView(ctk.CTkFrame):
         self._refresh_detected()
         self.config_label.configure(text=f"Config file: {config_path()}")
 
+    def on_cli_path_changed(self) -> None:
+        """Apply the override immediately, then re-check discovery.
+
+        The detected pill turns green the moment the path resolves, so the value
+        must be in effect at that moment. Otherwise Check version and Refresh
+        report "not found" seconds after a successful detection, because the
+        config was only written by Save — the pill was reading the field while
+        every command read the saved config.
+        """
+        self._apply_cli_override()
+        self._refresh_detected()
+
+    def _apply_cli_override(self) -> None:
+        """Push the field value into the live config so other views see it."""
+        value = self.cli_field.get() or None
+        if self.app.app_config.cli_path != value:
+            self.app.app_config.cli_path = value
+            self.app.on_config_changed()
+
     def _refresh_detected(self) -> None:
         resolved = find_cli(self.cli_field.get() or None)
         if resolved is None:
@@ -325,7 +348,7 @@ class SettingsView(ctk.CTkFrame):
         )
         if selected:
             self.cli_field.set(selected)
-            self._refresh_detected()
+            self.on_cli_path_changed()
 
     def _browse_into(self, field: LabeledEntry, directory: bool) -> None:
         if directory:
@@ -341,7 +364,7 @@ class SettingsView(ctk.CTkFrame):
 
     def _auto_detect(self) -> None:
         self.cli_field.set("")
-        self._refresh_detected()
+        self.on_cli_path_changed()
         resolved = find_cli(None)
         if resolved is None:
             MessageDialog.show(

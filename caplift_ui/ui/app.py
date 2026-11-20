@@ -23,6 +23,10 @@ NAV_ITEMS = (
     ("settings", "Settings"),
 )
 
+# Distinct from None (meaning "no executable found"), so the very first status
+# check always runs.
+_UNRESOLVED = object()
+
 
 class App(ctk.CTk):
     """The Caplift UI window.
@@ -41,6 +45,7 @@ class App(ctk.CTk):
         self._current_view: Optional[str] = None
         self._views: Dict[str, ctk.CTkFrame] = {}
         self._nav_buttons: Dict[str, ctk.CTkButton] = {}
+        self._last_cli_resolution: object = _UNRESOLVED
 
         self.title(f"{APP_NAME} — LM Studio wrapper helper")
         self.minsize(1020, 660)
@@ -338,6 +343,13 @@ class App(ctk.CTk):
 
     def _refresh_cli_status(self) -> None:
         resolved = find_cli(self.app_config.cli_path)
+        # The Settings override field calls this on every keystroke, so act (and
+        # log) only when the outcome actually changes, not on each character.
+        key = str(resolved) if resolved is not None else None
+        if key == self._last_cli_resolution:
+            return
+        self._last_cli_resolution = key
+
         if resolved is None:
             self.cli_pill.set_state("Executable not found", "error")
             self.cli_path_label.configure(
