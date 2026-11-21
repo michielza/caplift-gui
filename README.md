@@ -50,10 +50,13 @@ as it resolves, and **Save settings** keeps it for the next launch.
 
 ## Install
 
-No prebuilt binary is published yet, so build it (see [Build from source](#build-from-source)). Then:
+Download `caplift-ui.exe` from the [latest release](https://github.com/michielza/caplift-gui/releases/latest),
+or build it yourself (see [Build from source](#build-from-source)). Then:
 
 1. Put `caplift-ui.exe` in the same folder as `lmstudio-caplift.exe`.
 2. Run `caplift-ui.exe`.
+
+The executable is unsigned, so Windows SmartScreen warns on first run.
 
 ## Using it
 
