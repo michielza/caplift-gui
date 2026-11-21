@@ -1,4 +1,4 @@
-"""Available-models view: browse unwrapped models and create wrappers."""
+"""Available-models view: browse models, create wrappers, and re-wrap existing ones."""
 from __future__ import annotations
 
 from pathlib import Path

@@ -10,7 +10,8 @@ Dark, minimal, and dependency-light: one window, three views, no accounts, no te
 
 - **Available models** — lists installed LLMs that are not wrapped yet, with the CLI's suggested
   base template for each. Select one, adjust the options, preview the generated files, then create
-  the wrapper.
+  the wrapper. Tick **Show already-wrapped models** to bring back models you have already wrapped,
+  which is how you repair one that was built from the wrong template.
 - **Wrapped models** — shows everything tracked in `.lmstudio-caplift.json`, including the target
   folder and registry entry for each wrapper.
 - **Settings** — where the CLI lives, the LM Studio hub directory, the `lms` executable, and the
@@ -42,8 +43,10 @@ somewhere\
 
 <!-- TODO: link this to the lmstudio-caplift repository (and its Releases page) once it is public. -->
 
-The UI looks for `lmstudio-caplift.exe` in its own directory. If you need to keep the two apart, set
-an explicit path under **Settings → Override path**.
+The UI looks for `lmstudio-caplift.exe` in its own directory, then in the directory above it — the
+second exists so the UI can be run from source inside the CLI's own folder. If you need to keep the
+two apart, set an explicit path under **Settings → Override path**; that value takes effect as soon
+as it resolves, and **Save settings** keeps it for the next launch.
 
 ## Install
 
@@ -74,7 +77,7 @@ No prebuilt binary is published yet, so build it (see [Build from source](#build
      sent once a base template is set, because the CLI also uses this flag to pick a template — and
      this value is a derivation, not something the CLI verifies.
 3. **Preview (dry run)** first. Nothing is written. You get the exact `manifest.json` and `model.yaml`
-   that would be generated.
+   that would be generated — one tab per file, each with a Copy button.
 4. **Create wrapper**. A confirmation lists the target directory and registry path, then the CLI runs.
 5. Restart LM Studio and select the `local/...` model.
 6. **To repair or recreate a wrapper**, tick **Show already-wrapped models**. A wrapped model leaves
@@ -90,14 +93,15 @@ Stored in `caplift_ui_config.json`, next to the executable. Delete it to reset.
 
 | Setting | Meaning |
 | --- | --- |
-| Override path | Explicit path to `lmstudio-caplift.exe`. Blank = same folder as the UI. |
+| Override path | Explicit path to `lmstudio-caplift.exe`. Blank = same folder as the UI. Takes effect as soon as it resolves; Save persists it. |
 | Hub models directory | `--hub-models-dir`. Blank = `%USERPROFILE%\.lmstudio\hub\models`. |
 | `lms` executable | `--lms`. Blank = `%USERPROFILE%\.lmstudio\bin\lms.exe`, then `PATH`. |
 | Command timeout | How long to wait for the CLI before giving up. |
 | Allow overwriting by default | Pre-ticks `--force` on the wrap form. Off by default, deliberately. |
 
 `--force` replaces an existing `manifest.json` / `model.yaml`, so the confirmation dialog turns red
-and says so when it is enabled.
+and says so when it is enabled. The CLI refuses to overwrite without it, so re-wrapping an existing
+wrapper requires it.
 
 ## Keyboard shortcuts
 
@@ -113,9 +117,12 @@ and says so when it is enabled.
 python -m venv .venv
 .venv\Scripts\python.exe -m pip install -r requirements-dev.txt
 
-python -m unittest discover -s tests -t .     # unit tests, no GUI required
-.venv\Scripts\python.exe main.py              # run from source
+.venv\Scripts\python.exe -m unittest discover -s tests -t .   # unit tests, no GUI required
+.venv\Scripts\python.exe main.py                              # run from source
 ```
+
+Use the venv interpreter for both: the tests import CustomTkinter, so a system Python without it
+fails on import rather than on a test.
 
 Build a single executable (bundles the Python runtime):
 
@@ -136,13 +143,14 @@ caplift_ui/
   parser.py                 tolerant parsers for CLI JSON and dry-run output
   cli_runner.py             subprocess wrapper around the CLI
   tasks.py                  worker threads + main-thread callbacks for Tk
+  templates.py              finds installed Hub models usable as base templates
   ui/
     app.py                  main window, nav, console, status bar
     theme.py                colours and fonts (every hex value lives here)
-    widgets.py              DataTable, Console, SectionCard, LabeledEntry, StatusPill
+    widgets.py              DataTable, Console, SectionCard, LabeledEntry, LabeledCombo, StatusPill
     dialogs.py              confirm / preview / message modals
     wolf.py                 the wolf accent, drawn as vector polygons
-    available_view.py       list + wrap form
+    available_view.py       model list, wrap form, re-wrap toggle
     wrapped_view.py         tracked wrappers
     settings_view.py        paths and behaviour
 tests/                      unit tests, fixtures, GUI smoke test
@@ -159,6 +167,13 @@ tests/                      unit tests, fixtures, GUI smoke test
 - **Every colour and font lives in `theme.py`.** No hex values in view code.
 - **`config` is never used as an attribute name on the window.** `tkinter.Misc.config` *is*
   `Misc.configure`, so shadowing it breaks Tk internals; the settings object is `app.app_config`.
+- **`--hf-repo` is withheld while the base template is blank.** The flag does not only record
+  provenance — it also steers the CLI's own template matching, and this UI derives its value from the
+  model's filename. A guess must not choose your capability profile, so the value is only sent once a
+  template is set. The rule lives in `hf_repo_for_wrap()` in `ui/available_view.py`.
+- **A wrapped model is re-selectable on purpose.** It leaves the CLI's available list once created, so
+  the toggle exists to bring it back — without it there is no route to `--force`, and therefore no
+  way to repair a wrapper.
 
 ### Adding a view
 
