@@ -124,6 +124,7 @@ class AvailableView(ctk.CTkFrame):
         self._show_wrapped = False
         self._selected: Optional[AvailableModel] = None
         self._selected_is_wrapped = False
+        self._selected_wrapped: Optional[WrappedModel] = None
         self._last_preview: Optional[DryRunPreview] = None
         self._filter_text = ""
         self._hub_dir: Optional[Path] = None
@@ -557,6 +558,7 @@ class AvailableView(ctk.CTkFrame):
 
         self._selected = model
         self._selected_is_wrapped = wrapped_entry is not None
+        self._selected_wrapped = wrapped_entry
         self._last_preview = None
 
         self.model_title.configure(
@@ -673,6 +675,18 @@ class AvailableView(ctk.CTkFrame):
         check = self._template_check()
         if base and check.checked and not check.found:
             problems.append(check.reason)
+        # Repair re-runs wrap() with the registry's source model key. When the
+        # registry never recorded one there is nothing to re-wrap, and
+        # proceeding would target whatever the form happens to hold.
+        if self._selected_is_wrapped and not (
+            self._selected_wrapped is not None
+            and self._selected_wrapped.has_source_key
+        ):
+            problems.append(
+                "The registry does not record which model this wrapper was built "
+                "from, so it cannot be repaired from here. Re-wrap the model from "
+                "the Available list instead."
+            )
         # Re-wrapping targets a directory that already holds manifest.json and
         # model.yaml, so the CLI refuses without --force. Requiring it up front
         # beats letting the attempt fail.

@@ -120,12 +120,22 @@ def _as_mapping(value: Any) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
 
 
-def _iter_entries(value: Any) -> List[Mapping[str, Any]]:
+def _iter_entries(value: Any) -> List[Tuple[Optional[str], Mapping[str, Any]]]:
+    """Yield ``(container_key, entry)`` pairs, tolerating several shapes.
+
+    A list yields ``(None, entry)``. A mapping keyed by model id yields its key
+    as well, so that key can stand in for a missing ``modelKey`` — the CLI is
+    the authority on what a row is called, and a dictionary key is one of its
+    own. Keeping the key is what makes the dict shape genuinely supported
+    rather than incidentally non-crashing.
+    """
     if isinstance(value, list):
-        return [_as_mapping(item) for item in value]
+        return [(None, _as_mapping(item)) for item in value]
     if isinstance(value, Mapping):
-        # Tolerate a dict keyed by model id.
-        return [_as_mapping(item) for item in value.values()]
+        entries: List[Tuple[Optional[str], Mapping[str, Any]]] = []
+        for key, item in value.items():
+            entries.append((None if key is None else str(key), _as_mapping(item)))
+        return entries
     return []
 
 
@@ -145,11 +155,16 @@ def parse_registry_json(text: str) -> RegistryView:
     wrapped_raw = _pick(payload, ("wrappedModels", "wrapped", "wrapped_models", "tracked"))
 
     available: List[AvailableModel] = []
-    for entry in _iter_entries(available_raw):
-        model_key = _clean_str(_pick(entry, _MODEL_KEY_ALIASES))
-        if not model_key and isinstance(_pick(entry, _BASE_ID_ALIASES), str):
-            model_key = _clean_str(_pick(entry, _BASE_ID_ALIASES))
+    for container_key, entry in _iter_entries(available_raw):
+        model_key = _clean_str(_pick(entry, _MODEL_KEY_ALIASES)) or _clean_str(
+            container_key
+        )
         if not model_key:
+            # No usable identifier anywhere. The base-template field is NOT a
+            # fallback: it names the capability profile to copy, not the model
+            # being wrapped, so taking it as the model key would hand ``wrap``
+            # an id that resolves to a template. A row without an identity is
+            # dropped rather than given a plausible-but-wrong one.
             continue
         available.append(
             AvailableModel(
@@ -167,15 +182,22 @@ def parse_registry_json(text: str) -> RegistryView:
         )
 
     wrapped: List[WrappedModel] = []
-    for entry in _iter_entries(wrapped_raw):
-        wrapper_id = _clean_str(_pick(entry, _WRAPPER_ID_ALIASES))
+    for container_key, entry in _iter_entries(wrapped_raw):
+        wrapper_id = _clean_str(_pick(entry, _WRAPPER_ID_ALIASES)) or _clean_str(
+            container_key
+        )
+        # No container-key fallback for the source key here, unlike the
+        # available loop: in a registry keyed by id, a wrapped entry's key is
+        # the *wrapper's* own id, so adopting it would have Repair claim the
+        # wrapper wraps itself. Left None so ``has_source_key`` withholds
+        # Repair instead of guessing.
         model_key = _clean_str(_pick(entry, _MODEL_KEY_ALIASES))
         if not wrapper_id and not model_key:
             continue
         wrapped.append(
             WrappedModel(
                 wrapper_model_id=wrapper_id or "(unknown)",
-                model_key=model_key or "(unknown)",
+                model_key=model_key,
                 base_model_id=_clean_str(_pick(entry, _BASE_ID_ALIASES)),
                 target_dir=_clean_str(_pick(entry, _TARGET_DIR_ALIASES)),
                 created_at_unix_seconds=_clean_int(_pick(entry, _CREATED_ALIASES)),

@@ -360,6 +360,116 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config_path().name, "caplift_ui_config.json")
 
 
+class ModelKeyTests(unittest.TestCase):
+    """The model key identifies the model to wrap, and nothing may stand in.
+
+    Regression cover for a fallback that took ``selectedBaseModelId`` — the
+    capability *template* — as the model key when ``modelKey`` was absent. That
+    value reaches ``wrap`` as ``<MODEL_KEY>``, so the CLI would have been handed
+    a template id and asked to wrap it.
+    """
+
+    def test_base_template_is_never_used_as_the_model_key(self) -> None:
+        payload = {
+            "availableModels": [
+                {
+                    "modelKey": None,
+                    "selectedBaseModelId": "nvidia/nemotron-3-nano-omni",
+                    "displayName": "No Key Here",
+                }
+            ],
+            "wrappedModels": [],
+        }
+        registry = parse_registry_json(json.dumps(payload))
+        keys = [model.model_key for model in registry.available]
+        self.assertNotIn("nvidia/nemotron-3-nano-omni", keys)
+
+    def test_row_without_any_identifier_is_dropped(self) -> None:
+        # Better an absent row than one that would wrap the wrong thing.
+        payload = {
+            "availableModels": [{"selectedBaseModelId": "meta/muse-glimmer"}],
+            "wrappedModels": [],
+        }
+        registry = parse_registry_json(json.dumps(payload))
+        self.assertEqual(registry.available_count, 0)
+
+    def test_dict_key_stands_in_for_a_missing_model_key(self) -> None:
+        # The CLI may key the map by model id; that key is its own value and a
+        # legitimate identifier, unlike the template field.
+        payload = {
+            "availableModels": {
+                "granite-4.2-30b": {
+                    "displayName": "Granite 4.2 30B",
+                    "selectedBaseModelId": "qwen/qwen3",
+                }
+            },
+            "wrappedModels": [],
+        }
+        registry = parse_registry_json(json.dumps(payload))
+        self.assertEqual(
+            [model.model_key for model in registry.available],
+            ["granite-4.2-30b"],
+        )
+
+    def test_explicit_model_key_wins_over_the_container_key(self) -> None:
+        payload = {
+            "availableModels": {
+                "container-key": {"modelKey": "real-key", "selectedBaseModelId": None}
+            },
+            "wrappedModels": [],
+        }
+        registry = parse_registry_json(json.dumps(payload))
+        self.assertEqual([m.model_key for m in registry.available], ["real-key"])
+
+    def test_real_fixture_rows_all_keep_their_own_keys(self) -> None:
+        # The tolerant paths must not alter a well-formed capture.
+        payload = json.loads((FIXTURES / "list_all.json").read_text(encoding="utf-8"))
+        registry = parse_registry_json(json.dumps(payload))
+        for model in registry.available:
+            self.assertNotEqual(model.model_key, model.base_model_id or "")
+
+
+    def test_wrapped_entry_keyed_by_wrapper_id_does_not_borrow_it(self) -> None:
+        # Regression: in a registry keyed by id, a *wrapped* entry's key is the
+        # wrapper's own id — not the source model it wraps. Adopting it made
+        # Repair claim the wrapper wraps itself.
+        payload = {
+            "availableModels": [],
+            "wrappedModels": {
+                "local/muse-glimmer-30b": {"baseModelId": "meta/muse-glimmer"}
+            },
+        }
+        registry = parse_registry_json(json.dumps(payload))
+        entry = registry.wrapped[0]
+        self.assertEqual(entry.wrapper_model_id, "local/muse-glimmer-30b")
+        self.assertIsNone(entry.model_key)
+        self.assertFalse(entry.has_source_key)
+
+    def test_wrapped_entry_without_a_source_key_cannot_be_repaired(self) -> None:
+        payload = {
+            "availableModels": [],
+            "wrappedModels": [{"wrapperModelId": "local/foo"}],
+        }
+        entry = parse_registry_json(json.dumps(payload)).wrapped[0]
+        self.assertIsNone(entry.model_key)
+        self.assertFalse(entry.has_source_key)
+
+    def test_wrapped_entry_with_a_source_key_can_be_repaired(self) -> None:
+        payload = {
+            "availableModels": [],
+            "wrappedModels": [
+                {"wrapperModelId": "local/foo", "modelKey": "owner/repo/file.gguf"}
+            ],
+        }
+        entry = parse_registry_json(json.dumps(payload)).wrapped[0]
+        self.assertTrue(entry.has_source_key)
+
+    def test_real_tracked_fixture_stays_repairable(self) -> None:
+        payload = json.loads((FIXTURES / "list_tracked.json").read_text(encoding="utf-8"))
+        registry = parse_registry_json(json.dumps(payload))
+        self.assertTrue(all(entry.has_source_key for entry in registry.wrapped))
+
+
 class CliDiscoveryTests(unittest.TestCase):
     def test_missing_override_falls_back_to_auto_detection(self) -> None:
         # An override that does not exist must not be returned as-is.
