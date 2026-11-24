@@ -179,13 +179,30 @@ class CliRunner:
         result = self.run(args)
         text = result.stdout.strip()
 
-        if not text and not result.ok:
+        if not result.ok:
+            # Non-zero exit: keep the full CliResult for the log console.
             raise CliCommandError(result.combined_output or "list failed", result)
+
+        if not text:
+            # Exit 0 but nothing printed. The real CLI emits valid empty JSON
+            # for an empty registry (verified against 0.2.0), so blank stdout
+            # is a defect, not an empty registry. Plain CliError, NOT
+            # CliCommandError: describe_exception routes CliCommandError
+            # through describe_cli_error, which would discard this message
+            # and report "exited with an error" for a zero-exit run.
+            raise CliError(
+                "lmstudio-caplift exited successfully but printed no output; "
+                "expected registry JSON.")
 
         try:
             return parse_registry_json(text)
-        except ParseError as exc:
-            raise CliError(str(exc)) from exc
+        except ParseError:
+            # Fixed UI text, no interpolation. JSONDecodeError retains the
+            # input in .doc, so echoing the exception risks leaking registry
+            # contents.
+            raise CliError(
+                "lmstudio-caplift exited successfully but its output was not "
+                "understandable registry JSON.")
 
     def list_tracked(self) -> RegistryView:
         """Run ``list --json`` without ``--all`` (no LM Studio required)."""
