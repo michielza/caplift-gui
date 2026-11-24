@@ -116,25 +116,30 @@ def _clean_int(value: Any) -> Optional[int]:
         return None
 
 
-def _as_mapping(value: Any) -> Mapping[str, Any]:
-    return value if isinstance(value, Mapping) else {}
-
-
 def _iter_entries(value: Any) -> List[Tuple[Optional[str], Mapping[str, Any]]]:
     """Yield ``(container_key, entry)`` pairs, tolerating several shapes.
 
     A list yields ``(None, entry)``. A mapping keyed by model id yields its key
     as well, so that key can stand in for a missing ``modelKey`` — the CLI is
     the authority on what a row is called, and a dictionary key is one of its
-    own. Keeping the key is what makes the dict shape genuinely supported
-    rather than incidentally non-crashing.
+    own.
+
+    Only entries that are themselves objects are yielded. Coercing a scalar or
+    ``null`` to an empty mapping would not be harmless here: paired with its
+    container key, an empty mapping still produces a row, so ``{"x": null}``
+    would invent a model called ``x``. A value that is not an object carries no
+    identity and is skipped.
     """
+    entries: List[Tuple[Optional[str], Mapping[str, Any]]] = []
     if isinstance(value, list):
-        return [(None, _as_mapping(item)) for item in value]
+        for item in value:
+            if isinstance(item, Mapping):
+                entries.append((None, item))
+        return entries
     if isinstance(value, Mapping):
-        entries: List[Tuple[Optional[str], Mapping[str, Any]]] = []
         for key, item in value.items():
-            entries.append((None if key is None else str(key), _as_mapping(item)))
+            if isinstance(item, Mapping):
+                entries.append((None if key is None else str(key), item))
         return entries
     return []
 

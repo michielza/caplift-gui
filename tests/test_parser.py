@@ -470,6 +470,47 @@ class ModelKeyTests(unittest.TestCase):
         self.assertTrue(all(entry.has_source_key for entry in registry.wrapped))
 
 
+    def test_non_object_entries_are_not_rows(self) -> None:
+        # Regression: a null or scalar value was coerced to an empty mapping,
+        # and pairing that with its container key invented a model for every
+        # key in the map. One real model must stay one row.
+        payload = {
+            "availableModels": {
+                "owner/real-model": {"modelKey": "owner/real-model"},
+                "owner/from-null": None,
+                "owner/from-string": "not an object",
+                "owner/from-number": 42,
+            },
+            "wrappedModels": [],
+        }
+        registry = parse_registry_json(json.dumps(payload))
+        self.assertEqual([m.model_key for m in registry.available], ["owner/real-model"])
+
+    def test_non_object_wrapped_entries_are_not_rows(self) -> None:
+        payload = {
+            "availableModels": [],
+            "wrappedModels": {
+                "local/real": {
+                    "wrapperModelId": "local/real",
+                    "modelKey": "owner/repo/file.gguf",
+                },
+                "local/from-null": None,
+            },
+        }
+        registry = parse_registry_json(json.dumps(payload))
+        self.assertEqual(
+            [w.wrapper_model_id for w in registry.wrapped], ["local/real"]
+        )
+
+    def test_non_object_items_in_a_list_are_skipped(self) -> None:
+        payload = {
+            "availableModels": [None, "scalar", {"modelKey": "owner/real-model"}],
+            "wrappedModels": [],
+        }
+        registry = parse_registry_json(json.dumps(payload))
+        self.assertEqual([m.model_key for m in registry.available], ["owner/real-model"])
+
+
 class CliDiscoveryTests(unittest.TestCase):
     def test_missing_override_falls_back_to_auto_detection(self) -> None:
         # An override that does not exist must not be returned as-is.
