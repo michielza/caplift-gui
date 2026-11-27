@@ -6,7 +6,13 @@ from tkinter import filedialog
 
 import customtkinter as ctk
 
-from ..config import config_path, find_cli
+from ..config import (
+    DEFAULT_TIMEOUT_SECONDS,
+    MAX_TIMEOUT_SECONDS,
+    MIN_TIMEOUT_SECONDS,
+    config_path,
+    find_cli,
+)
 from ..cli_runner import CliRunner
 from ..tasks import describe_exception
 from .dialogs import ConfirmDialog, MessageDialog
@@ -276,7 +282,7 @@ class SettingsView(ctk.CTkFrame):
         """Validate and persist the form."""
         timeout_text = self.timeout_field.get()
         try:
-            timeout = int(timeout_text) if timeout_text else 300
+            timeout = int(timeout_text) if timeout_text else DEFAULT_TIMEOUT_SECONDS
         except ValueError:
             MessageDialog.show(
                 self.app,
@@ -285,11 +291,12 @@ class SettingsView(ctk.CTkFrame):
                 tone="error",
             )
             return
-        if timeout < 5 or timeout > 3600:
+        if not MIN_TIMEOUT_SECONDS <= timeout <= MAX_TIMEOUT_SECONDS:
             MessageDialog.show(
                 self.app,
                 "Invalid timeout",
-                "Use a timeout between 5 and 3600 seconds.",
+                f"Use a timeout between {MIN_TIMEOUT_SECONDS} and "
+                f"{MAX_TIMEOUT_SECONDS} seconds.",
                 tone="error",
             )
             return

@@ -8,12 +8,23 @@ from __future__ import annotations
 import json
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from caplift_ui.config import AppConfig, config_path, find_cli, load_config, save_config
+from caplift_ui.config import (
+    DEFAULT_TIMEOUT_SECONDS,
+    MAX_TIMEOUT_SECONDS,
+    MIN_TIMEOUT_SECONDS,
+    AppConfig,
+    config_path,
+    find_cli,
+    load_config,
+    sane_timeout,
+    save_config,
+)
 from caplift_ui.models import AvailableModel, derive_hf_repo, derive_wrapper_id
 from caplift_ui.parser import (
     ParseError,
@@ -358,6 +369,201 @@ class ConfigTests(unittest.TestCase):
 
     def test_config_path_sits_next_to_the_app(self) -> None:
         self.assertEqual(config_path().name, "caplift_ui_config.json")
+
+
+class ConfigPersistenceTests(unittest.TestCase):
+    """Saving is atomic and a broken file says so."""
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.dir = Path(tmp.name)
+        self.path = self.dir / "caplift_ui_config.json"
+
+    def test_save_leaves_no_temporary_file_behind(self) -> None:
+        self.assertIsNone(save_config(AppConfig(timeout_seconds=45), self.path))
+        self.assertEqual([p.name for p in self.dir.iterdir()], [self.path.name])
+
+    def test_no_temp_file_survives_a_failed_save(self) -> None:
+        # A directory where the file should go: the replace cannot succeed, and
+        # the half-written temp file must not be left lying next to it.
+        self.path.mkdir()
+        self.assertIsNotNone(save_config(AppConfig(), self.path))
+        self.assertEqual(list(self.dir.glob("*.tmp")), [])
+        self.assertEqual(list(self.dir.glob(".*.tmp")), [])
+
+    def test_existing_file_is_replaced_not_truncated(self) -> None:
+        save_config(AppConfig(timeout_seconds=60), self.path)
+        save_config(AppConfig(timeout_seconds=90), self.path)
+        self.assertEqual(load_config(self.path).timeout_seconds, 90)
+
+    def test_corrupt_file_is_reported(self) -> None:
+        # Silent fallback is the bug: the saved paths vanish and the only
+        # symptom is a missing executable.
+        self.path.write_text("{ this is not json", encoding="utf-8")
+        warnings: list = []
+        loaded = load_config(self.path, warnings=warnings)
+        self.assertIsNone(loaded.cli_path)
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("not valid JSON", warnings[0])
+
+    def test_absent_file_is_not_a_warning(self) -> None:
+        # First run writes no config, and that is not a problem to report.
+        warnings: list = []
+        load_config(self.dir / "absent.json", warnings=warnings)
+        self.assertEqual(warnings, [])
+
+    def test_unreadable_file_is_reported(self) -> None:
+        self.path.mkdir()  # a directory cannot be read as a file
+        warnings: list = []
+        load_config(self.path, warnings=warnings)
+        self.assertEqual(len(warnings), 1)
+
+    def test_non_object_json_is_reported(self) -> None:
+        self.path.write_text("[1, 2, 3]", encoding="utf-8")
+        warnings: list = []
+        load_config(self.path, warnings=warnings)
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("settings object", warnings[0])
+
+    def test_a_good_file_produces_no_warning(self) -> None:
+        save_config(AppConfig(timeout_seconds=45), self.path)
+        warnings: list = []
+        load_config(self.path, warnings=warnings)
+        self.assertEqual(warnings, [])
+
+
+class TimeoutBoundsTests(unittest.TestCase):
+    """The stored value and the effective value are the same value."""
+
+    def test_out_of_range_values_are_clamped_on_load(self) -> None:
+        for stored, expected in ((0, 5), (-1, 5), (1, 5), (99999, 3600)):
+            loaded = AppConfig.from_dict({"timeout_seconds": stored})
+            self.assertEqual(loaded.timeout_seconds, expected, stored)
+
+    def test_in_range_values_are_kept(self) -> None:
+        for stored in (5, 300, 3600):
+            self.assertEqual(AppConfig.from_dict({"timeout_seconds": stored}).timeout_seconds, stored)
+
+    def test_unusable_values_fall_back_to_the_default(self) -> None:
+        for stored in ("abc", None, [1]):
+            loaded = AppConfig.from_dict({"timeout_seconds": stored})
+            self.assertEqual(loaded.timeout_seconds, DEFAULT_TIMEOUT_SECONDS, stored)
+
+    def test_stored_value_already_matches_what_the_runner_would_use(self) -> None:
+        # The original defect: 99999 was stored as-is and clamped only at call
+        # time, so Settings displayed a number the runner never used.
+        loaded = AppConfig.from_dict({"timeout_seconds": 99999})
+        self.assertEqual(loaded.timeout_seconds, sane_timeout(99999))
+
+    def test_bounds_are_shared_with_the_settings_form(self) -> None:
+        self.assertEqual((MIN_TIMEOUT_SECONDS, MAX_TIMEOUT_SECONDS), (5, 3600))
+
+    def test_extreme_floats_do_not_raise(self) -> None:
+        # JSON caps no exponent, so a file containing 1e309 loads as infinity
+        # and int(infinity) raises OverflowError — during startup, before any
+        # window exists to report it.
+        for value in (1e309, float("inf"), float("-inf"), float("nan")):
+            self.assertEqual(sane_timeout(value), DEFAULT_TIMEOUT_SECONDS, value)
+
+    def test_a_settings_file_with_an_enormous_timeout_still_loads(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "caplift_ui_config.json"
+            path.write_text('{"timeout_seconds": 1e309}', encoding="utf-8")
+            warnings: list = []
+            loaded = load_config(path, warnings=warnings)
+            self.assertEqual(loaded.timeout_seconds, DEFAULT_TIMEOUT_SECONDS)
+            self.assertEqual(warnings, [])
+
+    def test_bool_is_not_read_as_a_timeout(self) -> None:
+        # int(True) is 1, which would clamp to 5 rather than falling back.
+        self.assertEqual(sane_timeout(True), DEFAULT_TIMEOUT_SECONDS)
+
+
+class ConcurrentSaveTests(unittest.TestCase):
+    """Two saves must not share one temporary file."""
+
+    def test_simultaneous_saves_do_not_collide(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "caplift_ui_config.json"
+            errors: list = []
+            barrier = threading.Barrier(6)
+
+            def worker(index: int) -> None:
+                barrier.wait()
+                result = save_config(AppConfig(timeout_seconds=10 + index), path)
+                if result is not None:
+                    errors.append(result)
+
+            threads = [threading.Thread(target=worker, args=(i,)) for i in range(6)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+
+            self.assertEqual(errors, [])
+            # Whoever won, the file is intact and holds one of the values.
+            loaded = load_config(path)
+            self.assertIn(loaded.timeout_seconds, range(10, 16))
+
+    def test_no_temporary_files_are_left_after_concurrent_saves(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            path = directory / "caplift_ui_config.json"
+            barrier = threading.Barrier(4)
+
+            def worker(index: int) -> None:
+                barrier.wait()
+                save_config(AppConfig(timeout_seconds=20 + index), path)
+
+            threads = [threading.Thread(target=worker, args=(i,)) for i in range(4)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+
+            leftovers = [p.name for p in directory.iterdir() if p.name != path.name]
+            self.assertEqual(leftovers, [])
+
+
+class BooleanSettingTests(unittest.TestCase):
+    """An unrecognised value must not silently enable a setting."""
+
+    def test_explicit_words_are_understood(self) -> None:
+        for word in ("true", "True", "1", "yes", "on"):
+            self.assertTrue(AppConfig.from_dict({"use_huggingface": word}).use_huggingface, word)
+        for word in ("false", "False", "0", "no", "off", ""):
+            self.assertFalse(AppConfig.from_dict({"use_huggingface": word}).use_huggingface, word)
+
+    def test_the_string_false_is_false(self) -> None:
+        # bool("false") is True — the defect this replaces.
+        self.assertFalse(AppConfig.from_dict({"use_huggingface": "false"}).use_huggingface)
+
+    def test_real_booleans_pass_through(self) -> None:
+        self.assertTrue(AppConfig.from_dict({"use_huggingface": True}).use_huggingface)
+        self.assertFalse(AppConfig.from_dict({"use_huggingface": False}).use_huggingface)
+
+    def test_zero_and_one_are_accepted_as_integers(self) -> None:
+        self.assertTrue(AppConfig.from_dict({"force_overwrite_by_default": 1}).force_overwrite_by_default)
+        self.assertFalse(AppConfig.from_dict({"force_overwrite_by_default": 0}).force_overwrite_by_default)
+
+    def test_other_integers_use_the_fallback(self) -> None:
+        for value in (2, -1, 7):
+            self.assertFalse(
+                AppConfig.from_dict({"force_overwrite_by_default": value}).force_overwrite_by_default,
+                value,
+            )
+
+    def test_unrecognised_values_use_the_fallback(self) -> None:
+        for value in ("maybe", "yep", [], {}, 3.5):
+            self.assertFalse(
+                AppConfig.from_dict({"use_huggingface": value}).use_huggingface, value
+            )
+
+    def test_fallback_can_be_true(self) -> None:
+        # The rule is "fallback", not "always False".
+        config = AppConfig.from_dict({"use_huggingface": True})
+        self.assertTrue(config.use_huggingface)
 
 
 class CliDiscoveryTests(unittest.TestCase):

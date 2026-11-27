@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import tkinter as tk
-from typing import Dict, Optional
+from typing import Dict, Optional, Sequence
 
 import customtkinter as ctk
 
@@ -36,12 +36,20 @@ class App(ctk.CTk):
     adding a view and a NAV_ITEMS entry.
     """
 
-    def __init__(self, config: AppConfig) -> None:
+    def __init__(
+        self,
+        config: AppConfig,
+        startup_warnings: Sequence[str] = (),
+    ) -> None:
         apply_base_theme()
         super().__init__(fg_color=COLORS["bg"])
         apply_ttk_theme(self)
 
         self.app_config = config or AppConfig()
+        # Held until the console exists, then logged once. A settings file that
+        # could not be read falls back to defaults, and the user needs to know
+        # that happened rather than discover it via a missing CLI path.
+        self._startup_warnings: tuple[str, ...] = tuple(startup_warnings)
         self._current_view: Optional[str] = None
         self._views: Dict[str, ctk.CTkFrame] = {}
         self._nav_buttons: Dict[str, ctk.CTkButton] = {}
@@ -374,6 +382,8 @@ class App(ctk.CTk):
     def _startup_refresh(self) -> None:
         self.log(f"{APP_NAME} started.", "info")
         self.log(f"Config file: {config_path()}", "info")
+        for warning in self._startup_warnings:
+            self.log(warning, "warn")
         self._refresh_cli_status()
 
         # Build both data views first: show_view() is what creates them, so

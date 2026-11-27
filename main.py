@@ -48,8 +48,9 @@ def main() -> int:
         return 1
 
     try:
-        config = load_config()
-        app = App(config)
+        warnings: list[str] = []
+        config = load_config(warnings=warnings)
+        app = App(config, startup_warnings=warnings)
         app.mainloop()
     except Exception as exc:  # noqa: BLE001 - top-level guard for a windowed app
         _fatal("Caplift UI crashed", str(exc), traceback.format_exc())
