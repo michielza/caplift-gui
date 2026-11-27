@@ -137,6 +137,30 @@ class CheckTests(unittest.TestCase):
         self.assertFalse(looks_like_model_id("/b"))
         self.assertFalse(looks_like_model_id(""))
 
+    def test_blank_segments_are_rejected_on_shape(self) -> None:
+        # The CLI answers "expected model id in owner/name form" for both, and
+        # Path.joinpath collapses the empty segment — so without this the probe
+        # lands on a real directory and the id reports as installed.
+        self.assertFalse(looks_like_model_id("owner//name"))
+        self.assertFalse(looks_like_model_id("owner/name/"))
+        self.assertFalse(looks_like_model_id("//owner/name"))
+
+    def test_malformed_id_is_not_reported_as_installed(self) -> None:
+        # The observable failure: a green "installed" hint for an id the CLI
+        # will refuse. The hub here genuinely contains owner/name, which is
+        # exactly what made the old probe succeed on a different path.
+        install_model(self.hub, "owner/name")
+        for bad in ("owner//name", "owner/name/"):
+            check = check_template(self.hub, bad)
+            self.assertFalse(check.found, bad)
+
+    def test_blank_segment_ids_never_reach_the_filesystem(self) -> None:
+        # Rejected on shape, so nothing is probed — checked stays True because
+        # the verdict is a real rejection, not an unknown.
+        check = check_template(self.hub, "owner//name")
+        self.assertTrue(check.checked)
+        self.assertIsNone(check.path)
+
 
 class HubDirResolutionTests(unittest.TestCase):
     def test_configured_dir_wins_outright(self) -> None:

@@ -26,15 +26,25 @@ COLUMNS = (
 # wrapped, never both, but the prefix guarantees the two maps cannot collide.
 WRAPPED_ROW_PREFIX = "wrapped::"
 
+# Shown when the registry never recorded which model a wrapper was built from.
+# The source key can legitimately be absent, and it is displayed and searched,
+# so it needs a real string rather than None.
+UNKNOWN_SOURCE_KEY = "(source model not recorded)"
+
 
 def model_from_wrapped(item: WrappedModel) -> AvailableModel:
     """Present a registry entry in the shape the wrap form expects.
 
     Deliberately reuses the existing wrapper id: re-wrapping repairs that
     wrapper instead of quietly creating a second one alongside it.
+
+    A missing source key becomes a visible placeholder rather than ``None``,
+    which would reach a widget as an empty label. Create is withheld
+    separately, in the form's blocking checks, so the placeholder is never
+    what gets wrapped.
     """
     return AvailableModel(
-        model_key=item.model_key,
+        model_key=item.model_key or UNKNOWN_SOURCE_KEY,
         wrapper_model_id=item.wrapper_model_id,
         base_model_id=item.base_model_id,
     )
@@ -90,13 +100,17 @@ def build_rows(
 
     if show_wrapped:
         for item in wrapped:
-            if search and search not in item.model_key.lower():
+            # The source key is optional in the registry. Falling back to a
+            # visible string keeps the row searchable and the table populated;
+            # searching this field directly would raise on None.
+            source = item.model_key or UNKNOWN_SOURCE_KEY
+            if search and search not in source.lower():
                 continue
             rows.append(
                 (
                     f"{WRAPPED_ROW_PREFIX}{item.wrapper_model_id}",
                     (
-                        item.model_key,
+                        source,
                         item.wrapper_model_id,
                         item.base_model_id or "—",
                         # The Size column has no meaning for a registry entry, and
@@ -124,6 +138,7 @@ class AvailableView(ctk.CTkFrame):
         self._show_wrapped = False
         self._selected: Optional[AvailableModel] = None
         self._selected_is_wrapped = False
+        self._selected_wrapped: Optional[WrappedModel] = None
         self._last_preview: Optional[DryRunPreview] = None
         self._filter_text = ""
         self._hub_dir: Optional[Path] = None
@@ -557,6 +572,7 @@ class AvailableView(ctk.CTkFrame):
 
         self._selected = model
         self._selected_is_wrapped = wrapped_entry is not None
+        self._selected_wrapped = wrapped_entry
         self._last_preview = None
 
         self.model_title.configure(
@@ -673,6 +689,18 @@ class AvailableView(ctk.CTkFrame):
         check = self._template_check()
         if base and check.checked and not check.found:
             problems.append(check.reason)
+        # Repair re-runs wrap() with the registry's source model key. When the
+        # registry never recorded one there is nothing to re-wrap, and
+        # proceeding would target whatever the form happens to hold.
+        if self._selected_is_wrapped and not (
+            self._selected_wrapped is not None
+            and self._selected_wrapped.has_source_key
+        ):
+            problems.append(
+                "The registry does not record which model this wrapper was built "
+                "from, so it cannot be repaired from here. Re-wrap the model from "
+                "the Available list instead."
+            )
         # Re-wrapping targets a directory that already holds manifest.json and
         # model.yaml, so the CLI refuses without --force. Requiring it up front
         # beats letting the attempt fail.

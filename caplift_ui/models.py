@@ -117,12 +117,26 @@ class WrappedModel:
     """A wrapper tracked in the CLI's own registry."""
 
     wrapper_model_id: str
-    model_key: str
+    # None when the registry never recorded which model the wrapper wraps.
+    # Deliberately not a "(unknown)" placeholder: that string would be sent to
+    # ``wrap`` verbatim by Repair, so "we do not know" has to stay
+    # distinguishable from a real key. See ``has_source_key``.
+    model_key: Optional[str] = None
     base_model_id: Optional[str] = None
     target_dir: Optional[str] = None
     created_at_unix_seconds: Optional[int] = None
     updated_at_unix_seconds: Optional[int] = None
     raw: Mapping[str, Any] = field(default_factory=dict)
+
+    @property
+    def has_source_key(self) -> bool:
+        """False when there is no source model key to repair from.
+
+        Repair re-runs ``wrap`` with this key as ``<MODEL_KEY>``, so without it
+        the action would target the wrong model. Callers use this to withhold
+        Repair rather than propose a fix built on a guess.
+        """
+        return bool(self.model_key and self.model_key.strip())
 
     @property
     def created_display(self) -> str:

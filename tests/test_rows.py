@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from caplift_ui.models import AvailableModel, WrappedModel
 from caplift_ui.ui.available_view import (
+    UNKNOWN_SOURCE_KEY,
     WRAPPED_ROW_PREFIX,
     build_rows,
     hf_repo_for_wrap,
@@ -117,6 +118,39 @@ class ModelFromWrappedTests(unittest.TestCase):
     def test_derives_a_wrapper_id_when_the_registry_lacks_one(self) -> None:
         item = WrappedModel(wrapper_model_id="", model_key="granite-4.2-30b")
         self.assertEqual(model_from_wrapped(item).suggested_wrapper_id, "local/granite-4-2-30b")
+
+
+class SearchWithMissingSourceKeyTests(unittest.TestCase):
+    """A wrapped entry may have no source model key recorded.
+
+    Regression: the search compared ``item.model_key.lower()`` directly, so a
+    missing key raised ``AttributeError`` while typing in the filter box.
+    """
+
+    def setUp(self) -> None:
+        self.keyless = WrappedModel(wrapper_model_id="local/no-source-key")
+
+    def test_search_does_not_raise_without_a_source_key(self) -> None:
+        rows = build_rows([], [self.keyless], show_wrapped=True, needle="anything")
+        self.assertEqual(rows, [])
+
+    def test_row_is_still_shown_when_not_filtering(self) -> None:
+        rows = build_rows([], [self.keyless], show_wrapped=True)
+        self.assertEqual(len(rows), 1)
+        cells = rows[0][1]
+        self.assertEqual(cells[0], UNKNOWN_SOURCE_KEY)
+        self.assertEqual(cells[1], "local/no-source-key")
+
+    def test_placeholder_is_searchable(self) -> None:
+        # It is what the table displays, so searching for it must find the row
+        # rather than silently matching nothing.
+        rows = build_rows([], [self.keyless], show_wrapped=True, needle="not recorded")
+        self.assertEqual(len(rows), 1)
+
+    def test_model_from_wrapped_never_yields_a_none_key(self) -> None:
+        model = model_from_wrapped(self.keyless)
+        self.assertEqual(model.model_key, UNKNOWN_SOURCE_KEY)
+        self.assertEqual(model.suggested_wrapper_id, "local/no-source-key")
 
 
 class HfRepoForWrapTests(unittest.TestCase):

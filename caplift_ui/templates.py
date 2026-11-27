@@ -55,9 +55,18 @@ class TemplateCheck:
 
 
 def looks_like_model_id(value: str) -> bool:
-    """True for ``owner/name`` with exactly one slash and no blanks."""
-    parts = [part for part in value.strip().split("/") if part.strip()]
-    return len(parts) == 2
+    """True for ``owner/name``: exactly one slash, both segments non-blank.
+
+    Empty segments are deliberately *not* filtered out, unlike a naive
+    ``split``-and-drop version. ``"owner//name"`` and ``"owner/name/"`` both
+    look like two segments once blanks are discarded, and ``Path.joinpath``
+    collapses the empty segment so the probe lands on ``owner/name`` — the UI
+    would then report a template as installed for an id the CLI rejects
+    outright ("expected model id in owner/name form"). Rejecting on shape is
+    the point: it happens before anything is probed.
+    """
+    parts = value.strip().split("/")
+    return len(parts) == 2 and all(part.strip() for part in parts)
 
 
 def find_installed_templates(hub_dir: Optional[Path]) -> List[BaseTemplate]:
