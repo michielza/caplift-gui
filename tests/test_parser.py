@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 
@@ -457,6 +458,72 @@ class TimeoutBoundsTests(unittest.TestCase):
 
     def test_bounds_are_shared_with_the_settings_form(self) -> None:
         self.assertEqual((MIN_TIMEOUT_SECONDS, MAX_TIMEOUT_SECONDS), (5, 3600))
+
+    def test_extreme_floats_do_not_raise(self) -> None:
+        # JSON caps no exponent, so a file containing 1e309 loads as infinity
+        # and int(infinity) raises OverflowError — during startup, before any
+        # window exists to report it.
+        for value in (1e309, float("inf"), float("-inf"), float("nan")):
+            self.assertEqual(sane_timeout(value), DEFAULT_TIMEOUT_SECONDS, value)
+
+    def test_a_settings_file_with_an_enormous_timeout_still_loads(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "caplift_ui_config.json"
+            path.write_text('{"timeout_seconds": 1e309}', encoding="utf-8")
+            warnings: list = []
+            loaded = load_config(path, warnings=warnings)
+            self.assertEqual(loaded.timeout_seconds, DEFAULT_TIMEOUT_SECONDS)
+            self.assertEqual(warnings, [])
+
+    def test_bool_is_not_read_as_a_timeout(self) -> None:
+        # int(True) is 1, which would clamp to 5 rather than falling back.
+        self.assertEqual(sane_timeout(True), DEFAULT_TIMEOUT_SECONDS)
+
+
+class ConcurrentSaveTests(unittest.TestCase):
+    """Two saves must not share one temporary file."""
+
+    def test_simultaneous_saves_do_not_collide(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "caplift_ui_config.json"
+            errors: list = []
+            barrier = threading.Barrier(6)
+
+            def worker(index: int) -> None:
+                barrier.wait()
+                result = save_config(AppConfig(timeout_seconds=10 + index), path)
+                if result is not None:
+                    errors.append(result)
+
+            threads = [threading.Thread(target=worker, args=(i,)) for i in range(6)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+
+            self.assertEqual(errors, [])
+            # Whoever won, the file is intact and holds one of the values.
+            loaded = load_config(path)
+            self.assertIn(loaded.timeout_seconds, range(10, 16))
+
+    def test_no_temporary_files_are_left_after_concurrent_saves(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            path = directory / "caplift_ui_config.json"
+            barrier = threading.Barrier(4)
+
+            def worker(index: int) -> None:
+                barrier.wait()
+                save_config(AppConfig(timeout_seconds=20 + index), path)
+
+            threads = [threading.Thread(target=worker, args=(i,)) for i in range(4)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+
+            leftovers = [p.name for p in directory.iterdir() if p.name != path.name]
+            self.assertEqual(leftovers, [])
 
 
 class BooleanSettingTests(unittest.TestCase):

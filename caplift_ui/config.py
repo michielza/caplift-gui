@@ -10,6 +10,8 @@ from __future__ import annotations
 import json
 import os
 import sys
+import tempfile
+import threading
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -27,12 +29,31 @@ DEFAULT_TIMEOUT_SECONDS = 300
 MIN_TIMEOUT_SECONDS = 5
 MAX_TIMEOUT_SECONDS = 3600
 
+# Serialises the rename step of save_config. See the note there: concurrent
+# os.replace calls onto one destination fail on Windows rather than racing
+# cleanly, so saves are ordered.
+_SAVE_LOCK = threading.Lock()
+
 
 def sane_timeout(value: Any) -> int:
-    """Clamp ``value`` to the supported range, falling back when unusable."""
+    """Clamp ``value`` to the supported range, falling back when unusable.
+
+    ``OverflowError`` is caught alongside the usual two: JSON has no limit on
+    exponent size, so a settings file containing ``1e309`` loads as
+    ``float("inf")`` and ``int()`` of that raises. A number we cannot represent
+    is an unusable value like any other, and must not crash startup.
+    """
+    # bool is an int subclass, and int(True) is 1 — a timeout of five seconds,
+    # not a value anyone stored on purpose.
+    if isinstance(value, bool):
+        return DEFAULT_TIMEOUT_SECONDS
+    if isinstance(value, float) and (
+        value != value or value in (float("inf"), float("-inf"))
+    ):
+        return DEFAULT_TIMEOUT_SECONDS
     try:
         parsed = int(value) if value is not None else DEFAULT_TIMEOUT_SECONDS
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return DEFAULT_TIMEOUT_SECONDS
     return max(MIN_TIMEOUT_SECONDS, min(parsed, MAX_TIMEOUT_SECONDS))
 
@@ -302,22 +323,40 @@ def save_config(config: AppConfig, path: Optional[Path] = None) -> Optional[str]
     is atomic on the same volume. A direct write can be interrupted part-way —
     the window closing mid-save is enough — leaving truncated JSON that
     ``load_config`` then reads as "no settings at all".
+
+    The temporary file gets a unique name via ``mkstemp`` rather than a fixed
+    ``.<name>.tmp``. Two saves racing on one path would share that file: one
+    could replace it while the other is still writing, or clean it up after the
+    other had closed it, so each save now owns its own file.
+
+    Unique names alone are not enough on Windows, though. Two ``os.replace``
+    calls onto the *same* destination can collide, and the loser fails with
+    ``WinError 5 (Access is denied)`` rather than simply losing the race. The
+    lock serialises the rename, which covers the real case — one UI process
+    saving from a button and again on close. Writers in separate processes are
+    not serialised and are out of scope for a single-window app.
     """
     target = path or config_path()
-    temp: Optional[Path] = None
+    temp_name: Optional[str] = None
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
         payload = json.dumps(config.to_dict(), indent=2) + "\n"
         # Same directory as the target: os.replace is only atomic within a
         # volume, and %TEMP% is frequently on a different one.
-        temp = target.with_name(f".{target.name}.tmp")
-        temp.write_text(payload, encoding="utf-8")
-        os.replace(temp, target)
+        fd, temp_name = tempfile.mkstemp(
+            dir=str(target.parent), prefix=f".{target.name}.", suffix=".tmp"
+        )
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(payload)
+        with _SAVE_LOCK:
+            os.replace(temp_name, target)
+        temp_name = None
     except OSError as exc:
-        if temp is not None:
+        return f"Could not save {target}: {exc}"
+    finally:
+        if temp_name is not None:
             try:
-                temp.unlink(missing_ok=True)
+                os.unlink(temp_name)
             except OSError:
                 pass
-        return f"Could not save {target}: {exc}"
     return None
