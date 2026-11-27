@@ -118,7 +118,7 @@ class App(ctk.CTk):
             "accent",
         )
         wrapped_view = self._views.get("wrapped")
-        if isinstance(wrapped_view, WrappedView) and registry.wrapped_count:
+        if isinstance(wrapped_view, WrappedView):
             wrapped_view.set_wrapped(registry.wrapped)
         self.set_status("Ready.", "ok")
 
