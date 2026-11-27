@@ -6,7 +6,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 import customtkinter as ctk
 
-from ..cli_runner import CliRunner
+from ..cli_runner import CliCommandError, CliError, CliRunner
 from ..config import resolve_hub_models_dir
 from ..models import AvailableModel, RegistryView, WrappedModel
 from ..parser import DryRunPreview
@@ -140,6 +140,8 @@ class AvailableView(ctk.CTkFrame):
         self._selected_is_wrapped = False
         self._selected_wrapped: Optional[WrappedModel] = None
         self._last_preview: Optional[DryRunPreview] = None
+        self._last_preview_context: Optional[tuple] = None
+        self._preview_request: Optional[object] = None
         self._filter_text = ""
         self._hub_dir: Optional[Path] = None
 
@@ -585,7 +587,6 @@ class AvailableView(ctk.CTkFrame):
                 f"Already wrapped as {wrapped_entry.wrapper_model_id}\n"
                 f"updated {wrapped_entry.updated_display}"
             )
-            self.force_switch.select()
         else:
             meta = "\n".join(line for line in (model.summary, model.path) if line)
         self.model_meta.configure(text=meta)
@@ -593,6 +594,10 @@ class AvailableView(ctk.CTkFrame):
         # Enable first: a disabled entry ignores writes, so populating before
         # this point would leave the fields looking empty.
         self._set_form_enabled(True)
+        if wrapped_entry is not None or self.app.app_config.force_overwrite_by_default:
+            self.force_switch.select()
+        else:
+            self.force_switch.deselect()
         self.base_field.set(model.base_model_id or self.app.last_base_template() or "")
         self.wrapper_field.set(model.suggested_wrapper_id)
         self.hf_field.set(model.suggested_hf_repo or "")
@@ -717,6 +722,17 @@ class AvailableView(ctk.CTkFrame):
         """The --hf-repo value to send, if any. See :func:`hf_repo_for_wrap`."""
         return hf_repo_for_wrap(self.base_field.get(), self.hf_field.get())
 
+    def _preview_context(self) -> tuple:
+        config = self.app.app_config
+        return (
+            self.base_field.get() or None,
+            self.wrapper_field.get() or None,
+            self._hf_repo_for_wrap(),
+            config.cli_path,
+            config.hub_models_dir,
+            config.lms_path,
+        )
+
     def preview_selected(self) -> None:
         model = self._selected
         if model is None:
@@ -726,12 +742,24 @@ class AvailableView(ctk.CTkFrame):
             MessageDialog.show(self.app, "Cannot preview", blockers[0], tone="error")
             return
 
-        base = self.base_field.get() or None
-        wrapper = self.wrapper_field.get() or None
-        hf_repo = self._hf_repo_for_wrap()
+        context = self._preview_context()
+        base, wrapper, hf_repo = context[:3]
+        request = object()
+        self._preview_request = request
+        try:
+            runner = self.app.build_runner()
+        except (CliError, OSError) as exc:
+            self.app.report_error("Dry run failed", exc)
+            return
+
+        def is_current():
+            return (
+                self._preview_request is request
+                and self._selected is model
+                and self._preview_context() == context
+            )
 
         def work():
-            runner: CliRunner = self.app.build_runner()
             return runner.preview_wrap(
                 model_key=model.model_key,
                 wrapper_model_id=wrapper,
@@ -740,7 +768,8 @@ class AvailableView(ctk.CTkFrame):
             )
 
         def done(preview: DryRunPreview):
-            self._last_preview = preview
+            if not is_current():
+                return
             self.app.log(f"$ wrap {model.model_key} --dry-run", "command")
             self.app.log(
                 f"{len(preview.files)} file(s) would be written to "
@@ -748,11 +777,20 @@ class AvailableView(ctk.CTkFrame):
                 "ok" if preview.files else "warn",
             )
             PreviewDialog.show(self.app, preview, heading="Dry run preview")
+            if not is_current():
+                return
             if preview.wrapper_model_id and preview.wrapper_model_id != self.wrapper_field.get():
                 self.wrapper_field.set(preview.wrapper_model_id)
                 self.app.log(f"Wrapper id confirmed by CLI: {preview.wrapper_model_id}", "info")
 
-        self.app.run_task(work, on_success=done, on_error=lambda exc: self.app.report_error("Dry run failed", exc), label="dry run")
+            self._last_preview = preview
+            self._last_preview_context = self._preview_context()
+
+        def failed(exc):
+            if is_current():
+                self.app.report_error("Dry run failed", exc)
+
+        self.app.run_task(work, on_success=done, on_error=failed, label="dry run")
 
     def create_selected(self) -> None:
         model = self._selected
@@ -763,9 +801,8 @@ class AvailableView(ctk.CTkFrame):
             MessageDialog.show(self.app, "Cannot create wrapper", blockers[0], tone="error")
             return
 
-        base = self.base_field.get() or None
-        wrapper = self.wrapper_field.get() or None
-        hf_repo = self._hf_repo_for_wrap()
+        context = self._preview_context()
+        base, wrapper, hf_repo = context[:3]
         force = bool(self.force_switch.get())
 
         details = [
@@ -775,7 +812,7 @@ class AvailableView(ctk.CTkFrame):
         ]
         if hf_repo:
             details.append(f"hf repo:        {hf_repo}")
-        if self._last_preview is not None:
+        if self._last_preview is not None and self._last_preview_context == context:
             if self._last_preview.target_dir:
                 details.append(f"target dir:     {self._last_preview.target_dir}")
             if self._last_preview.registry_path:
@@ -798,15 +835,30 @@ class AvailableView(ctk.CTkFrame):
             self.app.log("Wrap cancelled.", "info")
             return
 
+        if (
+            self._selected is not model
+            or self._preview_context() != context
+            or bool(self.force_switch.get()) != force
+        ):
+            self.app.set_status("Wrap options changed. Review them and try again.", "warn")
+            return
+        try:
+            runner = self.app.build_runner()
+        except (CliError, OSError) as exc:
+            self.app.report_error("Wrap failed", exc)
+            return
+
         def work():
-            runner: CliRunner = self.app.build_runner()
-            return runner.wrap(
+            result = runner.wrap(
                 model_key=model.model_key,
                 wrapper_model_id=wrapper,
                 base_model_id=base,
                 hf_repo=hf_repo,
                 force=force,
             )
+            if not result.ok:
+                raise CliCommandError(result.combined_output or "wrap failed", result)
+            return result
 
         def done(result):
             self.app.log(f"$ {result.command_line}", "command")

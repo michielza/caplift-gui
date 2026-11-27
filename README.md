@@ -17,8 +17,7 @@ Dark, minimal, and dependency-light: one window, three views, no accounts, no te
 - **Settings** — where the CLI lives, the LM Studio hub directory, the `lms` executable, and the
   command timeout.
 
-Only `list` and `wrap` are wired up so far. The other subcommands (`enable-thinking`, and anything
-added later) are a nav entry plus a view away — see [Adding a view](#adding-a-view).
+The UI covers `list` and `wrap`. `enable-thinking` is a backward-compatible alias for `wrap`.
 
 ## Requirements
 
@@ -192,7 +191,7 @@ tests/                      unit tests, fixtures, GUI smoke test
 python -m unittest discover -s tests -t .        # unit tests
 python tests/smoke_gui.py                        # opens the real window for 6s
 python tests/smoke_gui.py --view wrapped --select-first --shot shot.png
-python tests/smoke_gui.py --base meta/muse-glimmer --preview
+python tests/smoke_gui.py --select-first --base meta/muse-glimmer --preview
 ```
 
 `smoke_gui.py` is not collected by unittest because it needs a desktop session. It builds the real

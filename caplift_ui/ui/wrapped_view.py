@@ -192,6 +192,7 @@ class WrappedView(ctk.CTkFrame):
         self.table.set_rows(rows)
 
         if not rows:
+            self.subtitle.configure(text="No wrappers tracked by the caplift registry.", text_color=COLORS["text_muted"])
             self.detail_title.configure(text="No wrappers tracked yet.", text_color=COLORS["text_muted"])
             self._show_detail_text(
                 "Create one from the Available models tab. The registry is written next to the "

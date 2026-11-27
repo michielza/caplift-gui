@@ -13,7 +13,7 @@ Usage:
     python tests/smoke_gui.py                                  # open for 6s
     python tests/smoke_gui.py --seconds 10 --shot out.png
     python tests/smoke_gui.py --view wrapped --select-first --shot wrapped.png
-    python tests/smoke_gui.py --base meta/muse-glimmer --preview --shot preview.png
+    python tests/smoke_gui.py --select-first --base meta/muse-glimmer --preview --shot preview.png
 """
 from __future__ import annotations
 
@@ -52,6 +52,7 @@ def main() -> int:
 
     from caplift_ui.config import load_config
     from caplift_ui.ui.app import App
+    from caplift_ui.ui.dialogs import PreviewDialog
 
     config = load_config()
     # Force a sane on-screen size regardless of any saved geometry.
@@ -99,12 +100,17 @@ def main() -> int:
         if args.view:
             app.show_view(args.view)
 
+    failures = []
+    completed = False
+
     def do_select() -> None:
-        if not args.select_first:
+        if not (args.select_first or args.preview):
             return
         table = getattr(current_view(), "table", None)
         if table is not None:
             table.select_first()
+        if table is None or table.selected_id() is None:
+            failures.append("No table row was selected.")
 
     def do_base() -> None:
         if not args.base:
@@ -115,7 +121,7 @@ def main() -> int:
             print(f"base template set to {args.base}")
 
     def do_preview() -> None:
-        if not args.preview:
+        if not args.preview or failures:
             return
         view = current_view()
         preview = getattr(view, "preview_selected", None)
@@ -123,10 +129,15 @@ def main() -> int:
             preview()
 
     def finish() -> None:
+        nonlocal completed
+        completed = True
+        if args.preview and not failures and not any(
+            isinstance(child, PreviewDialog) for child in app.winfo_children()
+        ):
+            failures.append("Preview dialog did not open.")
         # Capture before closing: a modal dialog is part of what we want to see.
         take_shot()
         close_dialogs()
-        print("smoke test finished without an unhandled exception")
         app.after(250, app.destroy)
 
     # Proportional timeline: give startup refreshes time to land before acting.
@@ -158,6 +169,12 @@ def main() -> int:
 
     if crashed:
         print(f"FAILED: {len(crashed)} unhandled exception(s)", file=sys.stderr)
+        return 1
+    if not completed:
+        failures.append("The window closed before the smoke check completed.")
+    if failures:
+        for failure in failures:
+            print(f"FAILED: {failure}", file=sys.stderr)
         return 1
     print(f"exited cleanly after {elapsed:.1f}s")
     return 0
