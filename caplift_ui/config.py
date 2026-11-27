@@ -19,6 +19,23 @@ CLI_EXE_NAME = "lmstudio-caplift.exe"
 CONFIG_FILENAME = "caplift_ui_config.json"
 DEFAULT_TIMEOUT_SECONDS = 300
 
+# The one place the timeout bounds live. The Settings form, the config loader
+# and the runner all clamp to these, so a stored value and the value actually
+# used cannot disagree. Previously the loader stored whatever was in the file
+# and only the runner clamped, so Settings could show 99999 while the CLI was
+# given 3600.
+MIN_TIMEOUT_SECONDS = 5
+MAX_TIMEOUT_SECONDS = 3600
+
+
+def sane_timeout(value: Any) -> int:
+    """Clamp ``value`` to the supported range, falling back when unusable."""
+    try:
+        parsed = int(value) if value is not None else DEFAULT_TIMEOUT_SECONDS
+    except (TypeError, ValueError):
+        return DEFAULT_TIMEOUT_SECONDS
+    return max(MIN_TIMEOUT_SECONDS, min(parsed, MAX_TIMEOUT_SECONDS))
+
 
 def is_frozen() -> bool:
     """True when running from a PyInstaller bundle."""
@@ -151,9 +168,13 @@ class AppConfig:
             cli_path=_as_optional_str(data.get("cli_path")),
             hub_models_dir=_as_optional_str(data.get("hub_models_dir")),
             lms_path=_as_optional_str(data.get("lms_path")),
-            timeout_seconds=_as_int(data.get("timeout_seconds"), DEFAULT_TIMEOUT_SECONDS),
-            use_huggingface=bool(data.get("use_huggingface", False)),
-            force_overwrite_by_default=bool(data.get("force_overwrite_by_default", False)),
+            # Clamped on the way in, not just on the way out, so the number
+            # shown in Settings is the number the runner will use.
+            timeout_seconds=sane_timeout(data.get("timeout_seconds")),
+            use_huggingface=_as_bool(data.get("use_huggingface"), False),
+            force_overwrite_by_default=_as_bool(
+                data.get("force_overwrite_by_default"), False
+            ),
             window=window,
             recent_base_templates=_as_str_list(data.get("recent_base_templates")),
             recent_hf_repos=_as_str_list(data.get("recent_hf_repos")),
@@ -191,37 +212,112 @@ def _as_int(value: Any, fallback: int) -> int:
     return fallback if parsed is None else parsed
 
 
+_TRUE_WORDS = frozenset({"1", "true", "yes", "on"})
+_FALSE_WORDS = frozenset({"0", "false", "no", "off", ""})
+
+
+def _as_bool(value: Any, fallback: bool) -> bool:
+    """Read a boolean setting, accepting only values we can actually interpret.
+
+    ``bool(value)`` is wrong for this job: it turns the string ``"false"`` into
+    ``True``. Hand-edited config is a supported case, so the accepted spellings
+    are listed explicitly and anything else returns ``fallback`` rather than
+    guessing — an unrecognised value must not silently enable a setting.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        # 0 and 1 only. 2 is not a truthy boolean, it is a value we do not
+        # understand, and defaulting is safer than coercing.
+        return bool(value) if value in (0, 1) else fallback
+    if isinstance(value, str):
+        word = value.strip().lower()
+        if word in _TRUE_WORDS:
+            return True
+        if word in _FALSE_WORDS:
+            return False
+        return fallback
+    return fallback
+
+
 def _as_str_list(value: Any) -> List[str]:
     if not isinstance(value, (list, tuple)):
         return []
     return [str(item) for item in value if str(item).strip()]
 
 
-def load_config(path: Optional[Path] = None) -> AppConfig:
-    """Load the config file, falling back to defaults when it is missing or broken."""
+def load_config(
+    path: Optional[Path] = None,
+    warnings: Optional[List[str]] = None,
+) -> AppConfig:
+    """Load the config file, falling back to defaults when it is missing or broken.
+
+    ``warnings``, when supplied, collects a note for any file that existed but
+    could not be used. Falling back to defaults is right — a broken settings
+    file must not stop the app starting — but doing it *silently* is not: the
+    user's saved paths are gone, and the only symptom is "lmstudio-caplift.exe
+    was not found", which points nowhere near the cause. Callers pass a list
+    and surface it.
+    """
     target = path or config_path()
+    if not target.exists():
+        return AppConfig()
     try:
         raw = target.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
+    except (OSError, UnicodeDecodeError) as exc:
+        _note(
+            warnings,
+            f"{target} could not be read ({exc}). Default settings are in use; "
+            "saving will overwrite it.",
+        )
         return AppConfig()
     try:
         data = json.loads(raw)
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as exc:
+        _note(
+            warnings,
+            f"{target} is not valid JSON ({exc}). Default settings are in use; "
+            "saving will overwrite it.",
+        )
         return AppConfig()
     if not isinstance(data, dict):
+        _note(
+            warnings,
+            f"{target} does not contain a settings object. Default settings are "
+            "in use; saving will overwrite it.",
+        )
         return AppConfig()
     return AppConfig.from_dict(data)
 
 
+def _note(warnings: Optional[List[str]], message: str) -> None:
+    if warnings is not None:
+        warnings.append(message)
+
+
 def save_config(config: AppConfig, path: Optional[Path] = None) -> Optional[str]:
-    """Write the config file. Returns an error string on failure, otherwise None."""
+    """Write the config file. Returns an error string on failure, otherwise None.
+
+    Written to a temporary file and moved into place with ``os.replace``, which
+    is atomic on the same volume. A direct write can be interrupted part-way —
+    the window closing mid-save is enough — leaving truncated JSON that
+    ``load_config`` then reads as "no settings at all".
+    """
     target = path or config_path()
+    temp: Optional[Path] = None
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(
-            json.dumps(config.to_dict(), indent=2) + "\n",
-            encoding="utf-8",
-        )
+        payload = json.dumps(config.to_dict(), indent=2) + "\n"
+        # Same directory as the target: os.replace is only atomic within a
+        # volume, and %TEMP% is frequently on a different one.
+        temp = target.with_name(f".{target.name}.tmp")
+        temp.write_text(payload, encoding="utf-8")
+        os.replace(temp, target)
     except OSError as exc:
+        if temp is not None:
+            try:
+                temp.unlink(missing_ok=True)
+            except OSError:
+                pass
         return f"Could not save {target}: {exc}"
     return None

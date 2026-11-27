@@ -8,7 +8,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional, Sequence
 
-from .config import AppConfig, DEFAULT_TIMEOUT_SECONDS, find_cli
+from .config import (
+    AppConfig,
+    DEFAULT_TIMEOUT_SECONDS,
+    find_cli,
+    sane_timeout,
+)
 from .models import RegistryView
 from .parser import DryRunPreview, ParseError, parse_dry_run, parse_registry_json
 
@@ -239,8 +244,9 @@ class CliRunner:
 
 
 def _sane_timeout(value: Optional[int]) -> int:
-    try:
-        parsed = int(value) if value is not None else DEFAULT_TIMEOUT_SECONDS
-    except (TypeError, ValueError):
-        return DEFAULT_TIMEOUT_SECONDS
-    return max(5, min(parsed, 3600))
+    """Clamp to the configured bounds.
+
+    Thin alias over :func:`config.sane_timeout`: the bounds are defined once,
+    in the config module, so the loader and the runner cannot drift apart.
+    """
+    return sane_timeout(value)
